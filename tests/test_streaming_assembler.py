@@ -974,6 +974,33 @@ class TestFrameDecoderFilterChain:
         assert "hflip" not in vf
 
 
+_GRAPH_FILE_FLAGS = ("-/filter_complex", "-filter_complex_script")
+
+
+def _graph_file_flag(cmd: list[str]) -> str | None:
+    return next((flag for flag in _GRAPH_FILE_FLAGS if flag in cmd), None)
+
+
+def _fake_ffmpeg_run(graphs: list[str], *, returncode: int = 0, stderr: str = ""):
+    """Stand in for subprocess.run and record the filter graph FFmpeg was given.
+
+    The graph travels in a script file that is removed once FFmpeg returns, so
+    it has to be read while the fake process "runs". ffprobe calls succeed.
+    """
+
+    def run(cmd: list[str], **_: object) -> SimpleNamespace:
+        if flag := _graph_file_flag(cmd):
+            graphs.append(Path(cmd[cmd.index(flag) + 1]).read_text())
+        is_ffmpeg = cmd[0] == "ffmpeg"
+        return SimpleNamespace(
+            returncode=returncode if is_ffmpeg else 0,
+            stdout="192000",
+            stderr=stderr if is_ffmpeg else "",
+        )
+
+    return run
+
+
 class TestAudioFilterChain:
     """Verify audio filter graph includes loudnorm and privacy muffle."""
 
@@ -1042,8 +1069,6 @@ class TestAudioFilterChain:
         """Pre-extracted audio with fade transitions must route through
         filter graph with acrossfade, not concat demuxer (which ignores
         crossfade overlap and causes audio drift)."""
-        from unittest.mock import MagicMock, patch
-
         from immich_memories.processing.assembly_config import AssemblyClip
         from immich_memories.processing.streaming_audio import extract_and_mix_audio
 
@@ -1057,21 +1082,12 @@ class TestAudioFilterChain:
             AssemblyClip(path=Path("/b.mp4"), duration=3.0),
         ]
         output = tmp_path / "audio.m4a"
-
-        captured_cmds: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-            captured_cmds.append(cmd)
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout = "192000"
-            result.stderr = ""
-            return result
+        graphs: list[str] = []
 
         # WHY: subprocess.run is the FFmpeg/ffprobe process boundary
         with patch(
             "immich_memories.processing.streaming_audio.subprocess.run",
-            side_effect=fake_run,
+            side_effect=_fake_ffmpeg_run(graphs),
         ):
             extract_and_mix_audio(
                 clips=clips,
@@ -1081,14 +1097,108 @@ class TestAudioFilterChain:
                 pre_extracted_audio=[wav_a, wav_b],
             )
 
-        ffmpeg_cmds = [c for c in captured_cmds if c[0] == "ffmpeg"]
-        assert ffmpeg_cmds, "Expected at least one FFmpeg command"
-
-        main_cmd_str = " ".join(str(c) for c in ffmpeg_cmds[0])
-        assert "acrossfade" in main_cmd_str, (
+        assert graphs, "Expected one FFmpeg mix command carrying a filter graph"
+        assert "acrossfade" in graphs[0], (
             "Expected acrossfade filter to handle crossfade overlap. "
             "Concat demuxer duplicates overlap audio causing drift."
         )
+
+    def test_large_filter_graph_travels_in_a_file_not_an_argv_string(self, tmp_path: Path) -> None:
+        """A 3,679-photo album put a ~900 KB graph in one argv string; Linux caps
+        one at 128 KB and exec died with "Argument list too long" (#780)."""
+        from immich_memories.processing.assembly_config import AssemblyClip
+        from immich_memories.processing.streaming_audio import extract_and_mix_audio
+
+        n_clips = 1500
+        clips = [AssemblyClip(path=Path(f"/clip_{i}.mp4"), duration=3.0) for i in range(n_clips)]
+        graphs: list[str] = []
+        commands: list[list[str]] = []
+        fake = _fake_ffmpeg_run(graphs)
+
+        def run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+            commands.append(cmd)
+            return fake(cmd, **kwargs)
+
+        # WHY: subprocess.run is the FFmpeg/ffprobe process boundary
+        with patch("immich_memories.processing.streaming_audio.subprocess.run", side_effect=run):
+            extract_and_mix_audio(
+                clips=clips,
+                transitions=["fade"] * (n_clips - 1),
+                output_path=tmp_path / "audio.m4a",
+                fade_duration=0.5,
+            )
+
+        mix = next(c for c in commands if _graph_file_flag(c))
+        assert all(len(arg) < 128 * 1024 for arg in mix)
+        assert len(graphs) == 1 and len(graphs[0]) > 128 * 1024
+        assert graphs[0].count("acrossfade") == n_clips - 1
+        assert not list(tmp_path.glob("*.filter_complex.txt")), "graph file outlived the run"
+
+    @pytest.mark.parametrize(
+        ("major", "flag"),
+        [(9, "-/filter_complex"), (7, "-/filter_complex"), (6, "-filter_complex_script")],
+    )
+    def test_graph_file_option_follows_the_ffmpeg_version(
+        self, tmp_path: Path, major: int, flag: str
+    ) -> None:
+        """Homebrew's FFmpeg 9 removed -filter_complex_script; Ubuntu 24.04's
+        FFmpeg 6 never had -/filter_complex. macOS CI caught the first."""
+        from immich_memories.processing.assembly_config import AssemblyClip
+        from immich_memories.processing.streaming_audio import extract_and_mix_audio
+
+        clips = [
+            AssemblyClip(path=Path("/a.mp4"), duration=3.0),
+            AssemblyClip(path=Path("/b.mp4"), duration=3.0),
+        ]
+        commands: list[list[str]] = []
+        fake = _fake_ffmpeg_run([])
+
+        def run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+            commands.append(cmd)
+            return fake(cmd, **kwargs)
+
+        # WHY: subprocess.run is the ffmpeg boundary; the version probe is what this test varies
+        with (
+            patch("immich_memories.processing.streaming_audio.subprocess.run", side_effect=run),
+            patch(
+                "immich_memories.processing.ffmpeg_runner.ffmpeg_major_version",
+                return_value=major,
+            ),
+        ):
+            extract_and_mix_audio(
+                clips=clips, transitions=["fade"], output_path=tmp_path / "audio.m4a"
+            )
+
+        mix = next(c for c in commands if _graph_file_flag(c))
+        assert _graph_file_flag(mix) == flag
+        assert "-filter_complex" not in mix
+
+    def test_failure_message_names_the_error_not_the_progress(self, tmp_path: Path) -> None:
+        """The message carried seven progress lines and no cause (#779)."""
+        from immich_memories.processing.assembly_config import AssemblyClip
+        from immich_memories.processing.streaming_audio import extract_and_mix_audio
+
+        clips = [
+            AssemblyClip(path=Path("/a.mp4"), duration=3.0),
+            AssemblyClip(path=Path("/b.mp4"), duration=3.0),
+        ]
+        stderr = "[aac @ 0x1] Error while encoding: Invalid argument\n" + "".join(
+            f"size={i}KiB time=00:0{i}:00.00 bitrate=1k speed=30x    \r" for i in range(1, 8)
+        )
+
+        # WHY: subprocess.run is the FFmpeg/ffprobe process boundary
+        with (
+            patch(
+                "immich_memories.processing.streaming_audio.subprocess.run",
+                side_effect=_fake_ffmpeg_run([], returncode=1, stderr=stderr),
+            ),
+            pytest.raises(RuntimeError, match="Error while encoding") as raised,
+        ):
+            extract_and_mix_audio(
+                clips=clips, transitions=["fade"], output_path=tmp_path / "audio.m4a"
+            )
+
+        assert "size=" not in str(raised.value)
 
     def test_pre_extracted_audio_inputs_use_wav_paths(self, tmp_path: Path) -> None:
         """FFmpeg inputs should reference pre-extracted WAV files,
