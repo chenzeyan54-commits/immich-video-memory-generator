@@ -1,0 +1,20 @@
+{
+  "schema": "anonymous-cost-benchmark-v2",
+  "benchmark_date": "2026-09-12",
+  "scope": "Single monthly selection, no render or music",
+  "reader_comparison": {
+    "local_model_seconds": 1451.922,
+    "hosted_model_seconds": 537.379,
+    "hosted_model": "GPT-4.1 mini",
+    "recorded_token_cost_usd": 0.256,
+    "price_basis": "Recorded benchmark token estimate, not an invoice or current price quote",
+    "cache_states_matched": false
+  },
+  "rules_model_api_fee_usd": 0,
+  "unmeasured": [
+    "Electricity",
+    "Hardware amortization",
+    "Hosted costs for other products",
+    "Controlled provider quality ranking"
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "schema": "anonymous-host-benchmark-v2",
+  "benchmark_date": "2026-09-12",
+  "benchmark_pictures": 1440,
+  "request_seconds": 60,
+  "rendered": false,
+  "runs": [
+    {
+      "host": "workstation",
+      "reader": "rules",
+      "tier": "metadata_only",
+      "cache": "cold",
+      "seconds": 55.42
+    },
+    {
+      "host": "workstation",
+      "reader": "rules",
+      "tier": "metadata_only",
+      "cache": "warm",
+      "seconds": 1.4
+    },
+    {
+      "host": "celeron_nas",
+      "reader": "rules",
+      "tier": "metadata_only",
+      "cache": "cold",
+      "seconds": 279.01
+    },
+    {
+      "host": "celeron_nas",
+      "reader": "rules",
+      "tier": "metadata_only",
+      "cache": "warm",
+      "seconds": 11.15
+    },
+    {
+      "host": "kubernetes",
+      "reader": "rules",
+      "tier": "metadata_only",
+      "cache": "cold",
+      "seconds": 65.2
+    },
+    {
+      "host": "kubernetes",
+      "reader": "rules",
+      "tier": "metadata_only",
+      "cache": "warm",
+      "seconds": 2.14
+    },
+    {
+      "host": "kubernetes",
+      "reader": "rules",
+      "tier": "no_captions",
+      "cache": "cold",
+      "seconds": 301.04
+    },
+    {
+      "host": "kubernetes",
+      "reader": "remote_lan_model",
+      "tier": "no_captions",
+      "cache": "mixed",
+      "seconds": 985.68
+    },
+    {
+      "host": "celeron_nas",
+      "reader": "remote_lan_model",
+      "tier": "no_captions",
+      "cache": "detector_backfill",
+      "seconds": 1512.505
+    }
+  ],
+  "fresh_preparation_stage_seconds": {
+    "workstation": {
+      "previews": 34.67,
+      "pixels": 13.52
+    },
+    "celeron_nas": {
+      "previews": 19.88,
+      "pixels": 190.4
+    },
+    "kubernetes": {
+      "previews": 8.53,
+      "pixels": 42.11
+    }
+  },
+  "limitations": [
+    "Single observations",
+    "NAS container lifetime versus workstation/cluster CLI time",
+    "Model files pre-staged",
+    "External reader cache and context differences",
+    "Source/dependency overlays for original cluster test"
+  ]
+}
