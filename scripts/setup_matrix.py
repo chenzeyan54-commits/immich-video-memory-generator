@@ -42,6 +42,7 @@ from setup_matrix_capture import (  # noqa: E402
     latest_attempt,
     parse_cgroup_cpu_seconds,
     parse_cgroup_peak_rss_mb,
+    parse_models_fetch_seconds,
     parse_prepare_seconds,
     parse_prepared_pictures,
     parse_prepared_producers,
@@ -61,6 +62,7 @@ from setup_matrix_plan import (  # noqa: E402
     KUBECTL,
     LAN_OVERLAY,
     LAN_SERVICE,
+    MODELS_FETCH_SECONDS,
     REMOTE_OUT,
     CellPlan,
     Plan,
@@ -68,6 +70,7 @@ from setup_matrix_plan import (  # noqa: E402
     Step,
     build_plan,
     dry_run_text,
+    fetches_models,
     inference_image,
     inference_overlay_steps,
     load_manifest,
@@ -81,6 +84,7 @@ from setup_matrix_readiness import (  # noqa: E402
     await_facts,
     await_job,
     await_listener,
+    await_pod,
     port_forward,
     warmup_picture,
 )
@@ -173,6 +177,11 @@ NO_TIME_REASON = (
     "per-step peak memory. /usr/bin/time is not on this host, and the kernel's own"
     " counter is the maximum over every child the runner ever spawned, which is the"
     " lane rather than the cell."
+)
+NO_FETCH_REASON = (
+    "the pinned models this cell downloaded. The Mac lane runs on an install that"
+    " already has them, and a cell taking its picture facts off the service runs"
+    " no local model at all."
 )
 
 
@@ -286,26 +295,35 @@ def run_local_cell(item: CellPlan, plan: Plan, out_dir: Path) -> dict:
     return record
 
 
+# The two steps that watch the cluster rather than ask it once. A Job that failed
+# never satisfies a wait for condition=complete, and a pod that does not exist yet
+# is an error to `kubectl wait` rather than something it waits for.
+_K8S_POLLS = {"wait-created": await_pod, "wait": await_job}
+
+
+def _run_or_poll(step: Step, plan: Plan, item: CellPlan) -> subprocess.CompletedProcess:
+    """One command, or the poll that step stands for."""
+
+    def probe() -> subprocess.CompletedProcess:
+        return _run_step(step, plan, item)
+
+    poll = _K8S_POLLS.get(step.name) if item.cell.lane == "k8s" else None
+    return poll(probe) if poll else probe()
+
+
 def run_remote_cell(item: CellPlan, plan: Plan, out_dir: Path) -> dict:
     """The NAS and cluster lanes: push, run, pull, then read the same artifacts back."""
     cell_dir = out_dir / item.cell.id
     cell_dir.mkdir(parents=True, exist_ok=True)
     record = _new_record(item, primed=None)
     for step in item.steps:
-        # A Job that failed never satisfies a wait for condition=complete, so the
-        # one step that watches a Job polls for either outcome instead.
-        job_wait = step.name == "wait" and item.cell.lane == "k8s"
-        proc = (
-            await_job(lambda step=step: _run_step(step, plan, item))
-            if job_wait
-            else _run_step(step, plan, item)
-        )
+        proc = _run_or_poll(step, plan, item)
         (cell_dir / f"{step.name}.stdout.log").write_text(proc.stdout or "")
         (cell_dir / f"{step.name}.stderr.log").write_text(proc.stderr or "")
         if proc.returncode != 0 and step.name not in {"logs", "delete"}:
             record["error"] = f"{step.name} exited {proc.returncode}"
-            if item.diagnostic is not None:
-                record["error"] += "\n" + _diagnose(item.diagnostic, item, plan, cell_dir)
+            for diagnostic in item.diagnostics:
+                record["error"] += "\n" + _diagnose(diagnostic, item, plan, cell_dir)
             break
 
     if record["error"]:
@@ -355,6 +373,9 @@ def _read_remote_artifacts(record: dict, cell_dir: Path) -> None:
         record["timing"][field] = parse_prepare_seconds(text)
         if field == "prepare_cold_s":
             _apply_prepared(record, text)
+    fetched = cell_dir / MODELS_FETCH_SECONDS
+    if fetched.is_file():
+        record["timing"]["models_fetch_s"] = parse_models_fetch_seconds(fetched.read_text())
     generate = cell_dir / "generate.log"
     if generate.is_file():
         _apply_run_summary(record, generate.read_text(), cell_dir)
@@ -391,6 +412,7 @@ def _new_record(item: CellPlan, *, primed: bool | None) -> dict:
         # every NAS: a kernel with no CFS controller takes a cpuset, not a quota.
         "container_limits": item.container_limits or None,
         "timing": {
+            "models_fetch_s": None,
             "prepare_cold_s": None,
             "prepare_warm_s": None,
             "selection_s": None,
@@ -401,7 +423,7 @@ def _new_record(item: CellPlan, *, primed: bool | None) -> dict:
         },
         # Why a field the run did not report is missing, where "the run did not
         # report it" is not the whole story. Read by the summary's unmeasured list.
-        "measurement_notes": {},
+        "measurement_notes": {} if fetches_models(cell) else {"models_fetch_s": NO_FETCH_REASON},
         "prepared": {},
         "hosted_usage": {},
         "selected_asset_ids": [],
