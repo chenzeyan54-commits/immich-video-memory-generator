@@ -27,8 +27,11 @@ REFERENCE_CELL = "mac-local"
 CONDITIONS = (
     "One memory per cell: the same month of the same library, the same target length.",
     "Single observations. This is a comparison of setups, not a quality study.",
-    "Preparation cold is the first prepare of the scope on that host, warm the second"
-    " immediately after. A host whose bank already held the scope is named in unmeasured.",
+    "Every cell banks in a cache of its own, so nothing one cell derived or decided"
+    " reaches the next. Model files are the exception and stay shared.",
+    "Preparation cold is the first prepare of the scope into this cell's own cache,"
+    " warm the second immediately after. A cell re-run over its own cache is named"
+    " in unmeasured.",
     "Selection and render seconds are the run's own measured-this-run block, not a wall clock"
     " around the process.",
     "Token counts come from the end-of-run summary, which rounds at or above 1000.",
@@ -58,11 +61,15 @@ def order_kept(reference: list[str], other: list[str]) -> bool | None:
 
 
 def _timing_gaps(row: dict) -> list[str]:
+    """One line per missing timing, and its own reason where the cell recorded one."""
     timing = row.get("timing") or {}
+    notes = row.get("measurement_notes") or {}
     missing = sorted(name for name, value in timing.items() if value is None)
-    if not missing:
-        return []
-    return [f"{row['id']}: {', '.join(missing)}. The run did not report it."]
+    gaps = [f"{row['id']}: {notes[name]}" for name in missing if name in notes]
+    unexplained = [name for name in missing if name not in notes]
+    if unexplained:
+        gaps.append(f"{row['id']}: {', '.join(unexplained)}. The run did not report it.")
+    return gaps
 
 
 def _usage_gaps(row: dict) -> list[str]:
@@ -125,8 +132,8 @@ def build_summary(
         unmeasured.extend(_usage_gaps(row))
         if row.get("prepare_cache_primed"):
             unmeasured.append(
-                f"{row['id']}: a true cold preparation. The bank already held this scope,"
-                " so prepare_cold_s is a re-read, not a first derivation."
+                f"{row['id']}: a true cold preparation. This cell's own cache was already"
+                " there, so prepare_cold_s is a re-read, not a first derivation."
             )
     if not reference:
         unmeasured.append(
@@ -137,6 +144,11 @@ def build_summary(
         "library": library,
         "month": month,
         "image": image,
+        # The overlays pin a release of their own, so the service a cell called is
+        # not the app image unless the run said so. Taken from the cells that used it.
+        "inference_image": next(
+            (row["inference_image"] for row in rows if row.get("inference_image")), None
+        ),
         # How long the inference service took to answer its first real request,
         # which is a cost of the setup and not of the cell that would have paid it.
         "inference_warmup_s": inference_warmup_s,
