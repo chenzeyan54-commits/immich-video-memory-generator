@@ -29,8 +29,8 @@ is 3 h 41 min for a library of about ten thousand pictures instead of four days.
 
 **What runs on this CPU, identically to a GPU box:**
 - Clip discovery from Immich
-- The six context heads over the pinned ONNX encoder, and the two detectors (both are CPU-only by
-  construction: the Docling one pins `CPUExecutionProvider`, the Marqo one just sets thread count)
+- The six context heads over the pinned ONNX encoder, and the two detectors (all three are ONNX
+  sessions, and with no card to take they open on `CPUExecutionProvider`)
 - Burst and near-duplicate collapsing
 - Audio ducking and music mixing
 - Assembly, and all CLI and UI functionality

@@ -28,9 +28,10 @@ this service later; today it serves `/facts` only.
 `openvino`, `armnn` and `rocm` are not shipped. Quick Sync, VAAPI and NVENC decode, scale and
 encode: they do not run inference, and that stays true on every page here.
 
-The card accelerates the **DINOv2 encoder and its six heads**. Both detectors open CPU ONNX
-sessions whichever image they are in: the Docling one pins `CPUExecutionProvider` and the Marqo one
-only sets a thread count. So the `-cuda` image moves one producer of three onto the GPU.
+The card accelerates the **DINOv2 encoder and its six heads** and both detectors. All three are
+ONNX graphs, and all three open on the provider the deployment chose, so the `-cuda` image moves
+every producer onto the GPU rather than one of three. If the card turns a graph down, that seat
+falls back to the CPU and logs a WARNING saying so.
 
 Both are published by the release, so you pull rather than build:
 
@@ -87,6 +88,13 @@ there is nothing to write for it, and the CUDA one is the block above. From a ch
 `CPUExecutionProvider` on a GPU host means one of four things: the image is the CPU one, the device
 reservation did not reach the container, `PROVIDER` names `cpu`, or the driver and CUDA runtime in
 the image do not match. Check the tag first: it is the usual one.
+
+Each producer holds its own session, so each gets its own answer:
+`producers.heads.providers`, `producers.nsfw_marqo.providers` and `producers.doc_docling.providers`
+say what actually took the graph, and stay empty until that producer has been loaded. A seat on the
+CPU while the others are on the card is what a pegged CPU limit at 4% GPU looks like from outside
+the pod. If ONNX Runtime turns a graph down, the service logs one WARNING naming the seat and the
+provider it fell back to; it never serves CPU answers quietly.
 
 ## On Kubernetes
 
@@ -188,7 +196,7 @@ it and delete it. See [Setup matrix](../../contribute/setup-matrix.md).
 | Endpoint | Question |
 |---|---|
 | `GET /ping` | are you up |
-| `GET /health` | which producers are loaded, at which versions, on which provider |
+| `GET /health` | which producers are loaded, at which versions, on which provider each |
 | `POST /facts` | one picture in: what do the frozen classifiers say about it |
 
 ```bash
