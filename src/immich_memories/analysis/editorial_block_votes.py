@@ -13,7 +13,9 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from typing import NamedTuple
 
+from immich_memories.analysis.editorial_reader_concurrency import reader_map
 from immich_memories.analysis.editorial_structure_json import _first_object
 
 logger = logging.getLogger(__name__)
@@ -170,6 +172,16 @@ def _ask_orders(
     return votes
 
 
+class _Block(NamedTuple):
+    """One block of twelve, its two orders, and the cache key covering both prompts."""
+
+    items: list[str]
+    key: str
+    stage: str
+    orders: tuple[tuple[str, list[str]], ...]
+    prompts: dict[str, str]
+
+
 def vote_blocks(
     judge,
     *,
@@ -194,23 +206,41 @@ def vote_blocks(
     identity = _judge_model_identity(judge, model_identity) if bank is not None else None
     reusable = bank if identity is not None else None
     blocks = [list(items[i : i + BLOCK_SIZE]) for i in range(0, len(items), BLOCK_SIZE)]
+    pending = []
     for bi, block in enumerate(blocks):
         orders = _block_orders(block, bank_key(block))
         prompts = {name: prompt_of("\n".join(row_of(x) for x in order)) for name, order in orders}
-        votes = _banked_votes(
-            judge,
-            stage=f"{stage}-{bi + 1}",
-            orders=orders,
-            prompts=prompts,
+        pending.append(
+            _Block(
+                block,
+                _vote_cache_key(prompts, identity, max_tokens, answer_key),
+                f"{stage}-{bi + 1}",
+                orders,
+                prompts,
+            )
+        )
+
+    def read(child: object, asked: _Block) -> dict[str, dict[str, str]]:
+        if reusable is not None and asked.key in reusable:
+            return reusable[asked.key]
+        return _ask_orders(
+            child,
+            stage=asked.stage,
+            orders=asked.orders,
+            prompts=asked.prompts,
             answer_key=answer_key,
             label_of=label_of,
             max_tokens=max_tokens,
-            bank=reusable,
-            key=_vote_cache_key(prompts, identity, max_tokens, answer_key),
-            save=save,
         )
-        votes_of.update(_tally(block, label_of, votes, [name for name, _ in orders]))
-        rounds.extend(_round_records(f"{stage}-{bi + 1}", orders, votes))
+
+    for asked, votes in zip(pending, reader_map(judge, read, pending), strict=True):
+        if reusable is not None and asked.key not in reusable:
+            reusable[asked.key] = votes
+            if save is not None:
+                save()
+        names = [name for name, _order in asked.orders]
+        votes_of.update(_tally(asked.items, label_of, votes, names))
+        rounds.extend(_round_records(asked.stage, asked.orders, votes))
     return votes_of, rounds
 
 
@@ -237,17 +267,6 @@ def _round_records(
         }
         for name, order in orders
     ]
-
-
-def _banked_votes(judge, *, bank, key, save, **asking) -> dict[str, dict[str, str]]:
-    if bank is not None and key in bank:
-        return bank[key]
-    votes = _ask_orders(judge, **asking)
-    if bank is not None:
-        bank[key] = votes
-        if save is not None:
-            save()
-    return votes
 
 
 def _tally(
