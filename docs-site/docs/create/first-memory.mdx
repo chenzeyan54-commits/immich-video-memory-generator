@@ -84,9 +84,14 @@ click away under **Back to Generation Options**; the defaults are fine for a fir
 
 <ThemedScreenshot name="memory-export" alt="Export: output filename and Generate Video" />
 
-The player shows the result and **Saved to** gives the path (a per-run folder under
-`~/Videos/Memories` by default). With **Upload after generation** on, it is also in the Immich
+The player shows the result, **Saved to** gives the path (a per-run folder under
+`~/Videos/Memories` by default) and **Length** gives the finished film's runtime, measured from the
+file rather than from the plan. With **Upload after generation** on, it is also in the Immich
 album you named.
+
+Before the render, the **Film length** card on the export step estimates that runtime. It is an
+estimate because the smart transition style decides each cut or fade as it goes, so two renders of
+one selection differ by about a second.
 
 ## What just happened
 
