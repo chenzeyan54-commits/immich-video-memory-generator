@@ -19,7 +19,7 @@ from pydantic import Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from immich_memories.config_models import CacheConfig, HardwareAccelConfig, ImmichConfig
-from immich_memories.config_models_analysis import AnalysisConfig
+from immich_memories.config_models_analysis import AnalysisConfig, SpeechConfig
 from immich_memories.config_models_auth import AuthConfig
 from immich_memories.config_models_automation import (
     AutomationConfig,
@@ -52,6 +52,7 @@ from immich_memories.security import (
 _TIER2_SECTIONS = frozenset(
     {
         "analysis",
+        "speech",
         "hardware",
         "llm",
         "musicgen",
@@ -76,12 +77,11 @@ _REMOVED_TOP_LEVEL_SECTIONS = {
 _WENT_WITH_THE_SCORER = "went with the legacy clip scorer; story-first selection never read it"
 
 # Keys that went with the legacy clip scorer. Unlike the sections above these are
-# refused, not dropped: section models ignore unknown keys, so a file that still
-# sets one would keep loading while the setting silently did nothing.
+# warned about and dropped: section models ignore unknown keys, so without the
+# warning an old setting would silently do nothing after an upgrade.
 _REMOVED_CONFIG_KEYS: dict[str, str] = {
     "content_analysis": _WENT_WITH_THE_SCORER,
     "audio_content": _WENT_WITH_THE_SCORER,
-    "speech": "speech boundaries " + _WENT_WITH_THE_SCORER + " (the speech extra is gone)",
     "transcription": "transcription " + _WENT_WITH_THE_SCORER + " (the transcribe extra is gone)",
     "description_llm": "nothing read it; the editor's descriptions come from editorial.description_model",
     "hardware.gpu_analysis": _WENT_WITH_THE_SCORER,
@@ -315,6 +315,7 @@ class Config(BaseSettings):
     immich: ImmichConfig = Field(default_factory=ImmichConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
+    speech: SpeechConfig = Field(default_factory=SpeechConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     hardware: HardwareAccelConfig = Field(default_factory=HardwareAccelConfig)

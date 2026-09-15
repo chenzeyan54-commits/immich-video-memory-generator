@@ -110,6 +110,11 @@ dev-ci:
 dev-test:
 	uv sync --extra dev --locked
 
+# The assembly suite exercises the real local speech detector as well as FFmpeg.
+.PHONY: dev-test-integration
+dev-test-integration:
+	uv sync --extra dev --extra editorial --locked
+
 # Install with macOS-specific extras (Apple Vision, Metal GPU, etc.)
 dev-mac:
 	uv sync --extra all-mac --extra dev
@@ -549,7 +554,7 @@ diff-cover-local:  ## Check diff-cover locally before pushing (runs tests + merg
 		echo "   tests/test_ffmpeg_pipe.py for the pattern." && \
 		exit 1)
 
-integration-coverage-for-diff:  ## Run only the FFmpeg-only integration suites the diff touches (used by CI before diff-cover)
+integration-coverage-for-diff:  ## Run only the local integration suites the diff touches (used by CI before diff-cover)
 	@CHANGED=$$(git diff --name-only origin/main...HEAD -- 'src/immich_memories/**/*.py' 2>/dev/null); \
 	SUITES=""; \
 	case "$$CHANGED" in *src/immich_memories/titles/*) SUITES="$$SUITES titles";; esac; \
@@ -913,15 +918,15 @@ demo-ui: demo-ui-install demo-fixture  ## Render Remotion demo → docs-site/sta
 
 # The README hero is the brief → cut → storyboard stretch of the Remotion demo
 # (seconds 3.4 to 15.6) and then the last 3 s, the film it made: 720 px, 10 fps,
-# 15.2 s, 3.8 MB. The README loads it from GitHub Pages on every visit, so 4 MB is
+# 15.1 s, under 4 MB. The README loads it from GitHub Pages on every visit, so 4 MB is
 # the ceiling. The film tail is what costs: full-bleed photography runs about
 # 1.4 MB per GIF second against the UI's 0.09, because LZW gets nothing on moving
 # photographs. Width and the cut window alone cannot pay for it, so the palette is
-# capped at 80 colours and a light hqdn3d takes the grain out before palettegen
+# capped at 60 colours and a light hqdn3d takes the grain out before palettegen
 # sees it. sierra2_4a was measured worse than bayer here (+21%). Re-run after
 # `make demo-ui`, and re-check the size: the film's content sets it, not the code.
 demo-hero:  ## Cut the README hero GIF from docs-site/static/demo/demo.mp4: the brief, the cut and the storyboard, then the film it made
 	$(eval DEMO_END := $(shell ffprobe -v error -show_entries format=duration -of csv=p=0 docs-site/static/demo/demo.mp4))
 	ffmpeg -y -loglevel error -i docs-site/static/demo/demo.mp4 \
-	  -filter_complex "[0:v]trim=3.4:15.6,setpts=PTS-STARTPTS[a];[0:v]trim=start=$$(python3 -c 'print($(DEMO_END)-3.0)'),setpts=PTS-STARTPTS[b];[a][b]concat=n=2:v=1:a=0,fps=10,scale=720:-1:flags=lanczos,hqdn3d,split[x][y];[y]palettegen=max_colors=80:stats_mode=diff[p];[x][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
+	  -filter_complex "[0:v]trim=3.4:15.6,setpts=PTS-STARTPTS[a];[0:v]trim=start=$$(python3 -c 'print($(DEMO_END)-3.0)'),setpts=PTS-STARTPTS[b];[a][b]concat=n=2:v=1:a=0,fps=10,scale=720:-1:flags=lanczos,hqdn3d,split[x][y];[y]palettegen=max_colors=60:stats_mode=diff[p];[x][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
 	  docs-site/static/img/demo-hero.gif

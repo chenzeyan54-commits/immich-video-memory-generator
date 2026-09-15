@@ -76,13 +76,18 @@ def provider_metrics(counters):
 
 
 def shave_content_duration(carriers, content_cap):
-    """Retain the existing half-second cap adjustment before interval-bound inspection."""
+    """Shorten holds before inspection, preserving speech and exact source intervals."""
+    from immich_memories.speech.cuts import minimum_duration, safe_end, set_duration
+
     shaved = 0
     while sum(x["seconds"] for x in carriers) > content_cap:
-        longest = max(carriers, key=itemgetter("seconds"))
-        if longest["seconds"] <= MIN_CARRIER_SECONDS:
+        movable = [c for c in carriers if c["seconds"] > minimum_duration(c, MIN_CARRIER_SECONDS)]
+        if not movable:
             break
-        longest["seconds"] = round(max(MIN_CARRIER_SECONDS, longest["seconds"] - 0.5), 2)
+        longest = max(movable, key=itemgetter("seconds"))
+        desired = max(minimum_duration(longest, MIN_CARRIER_SECONDS), longest["seconds"] - 0.5)
+        duration = safe_end(longest, desired) - longest.get("start_time", 0.0)
+        set_duration(longest, duration)
         shaved += 1
     return shaved
 
@@ -224,6 +229,21 @@ def _optional_metrics(port) -> dict:
     return dict(port()) if port else {}
 
 
+def _carrier_locations(carriers, assets) -> dict:
+    """Keep enough private metadata to place trip dividers in a saved storyboard."""
+    result = {}
+    for carrier in carriers:
+        asset = assets.get(carrier["asset_id"])
+        exif = asset.exif_info if asset else None
+        if exif is not None and exif.latitude is not None and exif.longitude is not None:
+            result[carrier["asset_id"]] = {
+                "latitude": exif.latitude,
+                "longitude": exif.longitude,
+                "location_name": exif.city,
+            }
+    return result
+
+
 def _plan_dict(source, ports, facts: PlanFacts, outcome: PlanOutcome, judged) -> dict:
     case, intent = source.case, source.intent
     prior_events = {c["event"] for c in (facts.prior["carriers"] if facts.prior else [])}
@@ -311,6 +331,7 @@ def _plan_dict(source, ports, facts: PlanFacts, outcome: PlanOutcome, judged) ->
         "left_out_anchors": [],
         "anchor_records": [],
         "carriers": outcome.carriers,
+        "locations": _carrier_locations(outcome.carriers, source.assets),
         "cut_carriers": outcome.cut_carriers,
         "review": deepcopy(REVIEW),
         "structural_review": deepcopy(STRUCTURAL_REVIEW),

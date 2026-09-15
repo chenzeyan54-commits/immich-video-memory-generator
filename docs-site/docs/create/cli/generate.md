@@ -10,6 +10,16 @@ story, keeps the pictures that carry it, and renders a cut. It prepares missing 
 period first, so the first run over a period is the slow one: the second is mostly the render. The
 audience is always "family", which is part of the request rather than a setting.
 
+The CLI and web UI pass the same timed source clips to the editor, including
+short videos and those with unknown duration. The editor checks whether they can
+be used. The selection count includes photos when photos are enabled.
+
+`--duration` budgets the finished film: selection reserves the opening, ending and
+dividers, and credits expected crossfade overlap. Smart transitions use stable source
+IDs, so rerendering the same cut keeps the same transition choices. A selection with
+too little useful material can finish early. Older saved timing plans need replanning
+to use the new budget.
+
 ```bash
 immich-memories generate [OPTIONS]
 ```
