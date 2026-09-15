@@ -292,6 +292,12 @@ start on a host whose dialect you do not know. `true` and `false` still parse, a
 pictures is a measured runaway. Measured on the live endpoint, a thinking call ran 30-134 s where
 the same model answered in 4-7 s without it, and needs a 4000-token ceiling to finish.
 
+The `openai` preset sends `reasoning_effort: none` for `gpt-5.6-luna` and its dated snapshots
+on non-thinking calls. Older GPT-5 models keep `minimal`. An explicit setting wins over the preset.
+A provider that rejects a reasoning value reports that error; it does not silently remove the
+control and fall back to default reasoning. Only rejection of the parameter itself permits that
+fallback.
+
 `always_reasons` covers a reasoning model that bills its private thinking inside `max_tokens`, so
 the budget the reader asked for its answer is the budget the thinking spends first. Measured on one
 hosted API with the same 17 KB monthly read: 245 thinking tokens on the lightest model, 4,126 and
@@ -302,8 +308,13 @@ answer. The room is a ceiling, not a bill. It is learned from the first reply th
 tokens and remembered per server and model; set `always_reasons: true` to spare that first call,
 which otherwise comes back empty.
 
-`reader_concurrency` limits independent reader jobs in flight (1 to 16). Left unset it is read from
-`base_url`: 1 for a loopback, private address or bare service name, 4 for a public host. See
+`reader_concurrency` limits independent reader jobs in flight (1 to 16). Independent episode-evidence
+packs, event inventories and worthiness/standing blocks can overlap. Pages within an event,
+story-episode pages and later dependent picks remain sequential. Scheduling preserves prompt text,
+judgment keys and source ordering; batch delivery is configured separately.
+
+Left unset, concurrency is read from `base_url`: 1 for a loopback, private address or bare service
+name, 4 for a public host. See
 [Reader concurrency](../deploy/configuration/config-file.md#reader-concurrency). A provider that
 answers 429 pauses every reader in the run, each waiting a slightly different span.
 

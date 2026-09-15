@@ -123,6 +123,12 @@ cell's `timing.json` records `homebase: pinned`, a word and never the coordinate
 
 ## Cost is the price list times the tokens
 
+The CLI labels LLM duration as `summed request time`: it adds the duration of every request,
+including requests that overlap. Four concurrent 30-second calls contribute 120 request-seconds.
+Use the selection and render columns for elapsed time. Stored `llm_wall_seconds` and
+`hosted_usage.wall_seconds` keep this same cumulative meaning. The CLI also shows how many
+completion tokens were reasoning; they are already included in the completion total.
+
 `hosted_usage.tokens_in` and `tokens_out` come from `llm-usage.json`, which every run that asked a
 model leaves in its attempt directory. `usage_source` says `record` when the row was read from there,
 and `counted_exactly` is then true. A run made before that file existed is added back up out of its
