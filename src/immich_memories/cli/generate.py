@@ -103,6 +103,7 @@ def register_generate_commands(main: click.Group) -> None:
         trace_selection: Path | None,
         include_asset: tuple[str, ...],
         exclude_asset: tuple[str, ...],
+        house_instructions: str | None,
         upload_to_immich: bool,
         album: str | None,
         from_album: str | None,
@@ -156,6 +157,16 @@ def register_generate_commands(main: click.Group) -> None:
             config_container=config.output.format,
             format_override=output_format,
         )
+
+        # A per-run taste block is an A/B arm, not a config edit between runs.
+        if house_instructions is not None:
+            from immich_memories.analysis.editorial_intent import MAX_HOUSE_INSTRUCTIONS_CHARS
+
+            if len(house_instructions) > MAX_HOUSE_INSTRUCTIONS_CHARS:
+                raise click.UsageError(
+                    f"--house-instructions exceeds {MAX_HOUSE_INSTRUCTIONS_CHARS} characters"
+                )
+            config.editorial.house_instructions = house_instructions
 
         # CLI quality flag overrides config
         if quality:
