@@ -310,8 +310,8 @@ def _arm_selection_trace(path: Path | None) -> None:
         os.environ["IMMICH_MEMORIES_SELECTION_TRACE"] = str(path)
 
 
-def apply_house_instructions(config: Any, house_instructions: str | None) -> None:
-    """Carry a per-run taste block onto the config the planner reads.
+def apply_house_instructions(editorial, house_instructions: str | None) -> None:
+    """Carry a per-run taste block onto the editorial config the planner reads.
 
     The override exists so the two arms of a comparison are two commands rather
     than a config edit in between; omitting the flag keeps the configured block.
@@ -324,4 +324,4 @@ def apply_house_instructions(config: Any, house_instructions: str | None) -> Non
         raise click.UsageError(
             f"--house-instructions exceeds {MAX_HOUSE_INSTRUCTIONS_CHARS} characters"
         )
-    config.editorial.house_instructions = house_instructions
+    editorial.house_instructions = house_instructions

@@ -158,7 +158,7 @@ def register_generate_commands(main: click.Group) -> None:
             config_container=config.output.format,
             format_override=output_format,
         )
-        apply_house_instructions(config, house_instructions)
+        apply_house_instructions(config.editorial, house_instructions)
 
         # CLI quality flag overrides config
         if quality:
