@@ -43,6 +43,7 @@ from immich_memories.cli.generate_resolution import (
     _arm_selection_trace,
     _resolve_generation_scope,
     _validate_album_scope,
+    apply_house_instructions,
     name_from_catalogue,
     resolve_inclusion,
     resolve_people_condition,
@@ -157,16 +158,7 @@ def register_generate_commands(main: click.Group) -> None:
             config_container=config.output.format,
             format_override=output_format,
         )
-
-        # A per-run taste block is an A/B arm, not a config edit between runs.
-        if house_instructions is not None:
-            from immich_memories.analysis.editorial_intent import MAX_HOUSE_INSTRUCTIONS_CHARS
-
-            if len(house_instructions) > MAX_HOUSE_INSTRUCTIONS_CHARS:
-                raise click.UsageError(
-                    f"--house-instructions exceeds {MAX_HOUSE_INSTRUCTIONS_CHARS} characters"
-                )
-            config.editorial.house_instructions = house_instructions
+        apply_house_instructions(config, house_instructions)
 
         # CLI quality flag overrides config
         if quality:
