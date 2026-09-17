@@ -322,6 +322,9 @@ def _final_duplicate_review(
         picture_records=final_records,
         preview_hashes=ports.sampled_preview_hashes(displayed_ids, final_records),
         confirm_relation=source_relation,
+        confirm_episode_relation=sampled_source_relation(
+            ports.confirm_episode_pairs, picture_records=final_records
+        ),
         bound_sample_members=final_members,
         protected_asset_ids=sorted(
             (prior_assets - set(prior.get("review_proposed_assets", [])) if prior else set())
@@ -690,7 +693,6 @@ def _story_selection(
         lines=material.story_lines,
         flagged=lambda asset_id: bool(FLAGGED_LINE.search(source.annotations.get(asset_id, ""))),
         life=lambda asset_id: _shows_life(material, unit_of, asset_id),
-        shareable=gate.shareable_rung,
         full_lines=source.annotations,
         contract=contract + "\n\n" + source.intent.story_prompt_block(),
         event_units=pool.units,
@@ -698,8 +700,8 @@ def _story_selection(
         anchor_label=wall.anchor_label,
         label_line=material.text.label,
         quality=material.builder.quality,
-        picture_line=gate.proposed_picture_line if ports.observe_picture is not None else None,
         motion_line=ports.observe_story_motion,
+        episode_readings=source.episode_readings,
         target_seconds=(
             source.render_timing.selection_budget(
                 source.assets, expected_clip_duration=seconds_per_slot
@@ -759,7 +761,7 @@ def _apply_audience_gate(
         pool_for=alternatives_pool(selection, material.units),
         audience=gate.audience,
     )
-    open_share_log(share_log, gate, funded_acquisition={})
+    open_share_log(share_log, funded_acquisition={})
     run.selection_stages["after_shareability"] = len(run.carriers)
     close_share_log(
         share_log,

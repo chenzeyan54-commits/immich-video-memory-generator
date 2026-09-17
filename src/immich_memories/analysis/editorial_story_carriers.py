@@ -2,9 +2,10 @@
 
 A funded story offers its open moments; the standing gate asks whether each candidate picture
 stands by itself; the pick chooses which moments tell the story; and one picture per chosen
-moment is admitted as a carrier if it is free, in context, spaced from what is already committed
-and allowed for the audience. Freed slots are re-granted across the stories in further passes,
-never to variants. An occasion whose every candidate failed still shows once.
+moment is admitted as a carrier if it is free, in context and spaced from what is already
+committed. The audience gate judges the finished cut, not every candidate. Freed slots are
+re-granted across the stories in further passes, never to variants. An occasion whose every
+candidate failed still shows once.
 """
 
 from __future__ import annotations
@@ -28,6 +29,35 @@ from immich_memories.analysis.editorial_story_slots import PartitionedSlots
 
 MAX_PASSES = 3
 WEIGHED_STORY_WEIGHTS = ("dominant", "major", "minor")
+
+
+def choice_is_starred(c: DepictedChoice, unit_by_asset: Mapping[str, Any]) -> bool:
+    return any(unit_by_asset[a][1].get("favourite") for a in c.members if a in unit_by_asset)
+
+
+def shortlist_by_partition(
+    choices: Sequence[DepictedChoice],
+    grants_by_part: Mapping[str | None, int],
+    parts: PartitionedSlots,
+    unit_by_asset: Mapping[str, Any],
+    *,
+    starred: Callable[[DepictedChoice], bool],
+    life: Callable[[str], bool],
+    kind_of: Callable[[DepictedChoice], str],
+) -> list[DepictedChoice]:
+    """The moments a story's grant can still reach, sampled inside each funded partition."""
+    return [
+        c
+        for part, part_choices in parts.split(choices).items()
+        if grants_by_part.get(part, 0)
+        for c in shortlist_story_moments(
+            _spaced(part_choices, unit_by_asset),
+            grants_by_part[part],
+            starred=starred,
+            life=life,
+            kind_of=kind_of,
+        )
+    ]
 
 
 def _unit_reader(
@@ -153,9 +183,7 @@ class CarrierAdmission:
         line_of: Callable[[str], str],
         life: Callable[[str], bool],
         excluded: Mapping[str, str],
-        shareable: Callable[[dict], bool] | None,
         kind_marker: Callable[[DepictedChoice], str],
-        picture_line: Callable[[dict], str] | None,
         motion_line: Callable[[dict], str] | None,
         contract: str,
         record: Callable[[str, Mapping[str, Any]], None],
@@ -174,9 +202,7 @@ class CarrierAdmission:
         self._line_of = line_of
         self._life = life
         self._excluded = excluded
-        self._shareable = shareable
         self._kind_marker = kind_marker
-        self._picture_line = picture_line
         self._motion_line = motion_line
         self._contract = contract
         self._record = record
@@ -190,23 +216,17 @@ class CarrierAdmission:
         self.failed_standing: list[str] = []
         self.editorially_closed: set[tuple[str, str | None]] = set()
         self._taken: set[str] = set()
-        self._rejected: set[str] = set()
         self._used_choice_keys: set[str] = set()
         self._picked_before: dict[str | tuple[str, str | None], bool] = {}
 
     # -- eligibility ------------------------------------------------------------------
 
     def starred_choice(self, c: DepictedChoice) -> bool:
-        return any(
-            self._unit_by_asset[a][1].get("favourite")
-            for a in c.members
-            if a in self._unit_by_asset
-        )
+        return choice_is_starred(c, self._unit_by_asset)
 
     def free(self, asset: str) -> bool:
         return (
             asset not in self._taken
-            and asset not in self._rejected
             and asset in self._unit_by_asset
             and asset not in self._excluded
             and (
@@ -219,14 +239,6 @@ class CarrierAdmission:
                 < self.parts.limit
             )
         )
-
-    def admissible(self, asset: str) -> bool:
-        if not self.free(asset):
-            return False
-        if self._shareable is not None and not self._shareable(self._unit_by_asset[asset][1]):
-            self._rejected.add(asset)
-            return False
-        return True
 
     def compatible(self, choice, chosen) -> bool:
         occupied = [*self.carriers, *(self._unit_by_asset[c.primary][1] for c in chosen)]
@@ -265,7 +277,7 @@ class CarrierAdmission:
             )
             if not _spaced([actual], self._unit_by_asset, already=self.carriers):
                 continue
-            if not self.admissible(asset):
+            if not self.free(asset):
                 continue
             family, unit = self._unit_by_asset[asset]
             rest = [
@@ -299,18 +311,15 @@ class CarrierAdmission:
 
     def _shortlists(self, funded, open_of, partition_grants) -> dict[str, list[DepictedChoice]]:
         return {
-            s["key"]: [
-                c
-                for part, choices in self.parts.split(open_of[s["key"]]).items()
-                if partition_grants[s["key"]].get(part, 0)
-                for c in shortlist_story_moments(
-                    _spaced(choices, self._unit_by_asset),
-                    partition_grants[s["key"]][part],
-                    starred=self.starred_choice,
-                    life=self._life,
-                    kind_of=self._kind_marker,
-                )
-            ]
+            s["key"]: shortlist_by_partition(
+                open_of[s["key"]],
+                partition_grants[s["key"]],
+                self.parts,
+                self._unit_by_asset,
+                starred=self.starred_choice,
+                life=self._life,
+                kind_of=self._kind_marker,
+            )
             for s in funded
         }
 
@@ -330,6 +339,10 @@ class CarrierAdmission:
         }
 
     def _weigh_standing(self, funded, short_of, extra_of) -> None:
+        # Extra nearby pictures cannot alter the established timeline's standing
+        # questions. Their admission remains independently assessed and cached.
+        # They ride in the same blocks as the shortlisted primaries, so one pass packs
+        # its twelves once instead of leaving four part-filled rounds behind.
         self.gate.ensure(
             [
                 a
@@ -338,14 +351,12 @@ class CarrierAdmission:
                 for a in (c.members if self.gate.thin(s["key"]) else [c.primary])
                 if self.free(a)
             ]
+            + [c.primary for s in funded for c in extra_of[s["key"]] if self.free(c.primary)]
         )
-        self.gate.ensure(self._alternatives_of_failed(funded, short_of))
-        # Extra nearby pictures cannot alter the established timeline's standing
-        # questions. Their admission remains independently assessed and cached.
         self.gate.ensure(
-            [c.primary for s in funded for c in extra_of[s["key"]] if self.free(c.primary)]
+            self._alternatives_of_failed(funded, short_of)
+            + self._alternatives_of_failed(funded, extra_of)
         )
-        self.gate.ensure(self._alternatives_of_failed(funded, extra_of))
 
     def _alternatives_of_failed(self, funded, offered) -> list[str]:
         return [
@@ -407,7 +418,7 @@ class CarrierAdmission:
             """Check only proposed improvements, before dropping the original choice.
             A held candidate cannot create a hole."""
             return any(
-                self.admissible(a) for a in c.members if self.gate.stands(a, s["weight"], s["key"])
+                self.free(a) for a in c.members if self.gate.stands(a, s["weight"], s["key"])
             )
 
         picked = pick_story_moments(
@@ -420,7 +431,6 @@ class CarrierAdmission:
             record=record_pick,
             kind_of=self._kind_marker,
             compatible=self.compatible,
-            picture_of=_unit_reader(self._picture_line, self._unit_by_asset),
             motion_of=_unit_reader(self._motion_line, self._unit_by_asset),
             is_video=lambda c: self._unit_by_asset[c.primary][1]["kind"] == "video",
             replacement_allowed=allows_replacement,
@@ -471,19 +481,25 @@ class CarrierAdmission:
                 asset, carrier, rest = self.carrier_for(c, s, index, good)
                 if carrier is None:
                     continue
+                # A spare replaces this carrier rather than joining it, so the pool is read
+                # while its own partition slot is still free.
+                spares = self._spares(s, asset, short_of, open_of)
                 self._taken.add(asset)
                 self.carriers.append(carrier)
                 self.chosen_by_story[s["key"]].append(c.key)
                 added += 1
-                self.alternatives_of[asset] = [*rest, *self._spares(s, asset, short_of, open_of)]
+                self.alternatives_of[asset] = [*rest, *spares]
         return added
 
     def _spares(self, s, asset, short_of, open_of) -> list[str]:
+        """The pool the audience gate draws a replacement from: a spare must stand by itself
+        under the same rule the carrier it would replace had to meet."""
         return [
             o.primary
             for o in short_of.get(s["key"], open_of[s["key"]])
             if o.key not in self._used_choice_keys
             and self.free(o.primary)
+            and self.gate.stands(o.primary, s["weight"], s["key"])
             and (
                 self.parts.limit is None
                 or self.parts.of_asset(o.primary) == self.parts.of_asset(asset)
@@ -536,7 +552,7 @@ class CarrierAdmission:
 
     def run(self) -> None:
         """Pick the moments that tell each story, then one picture per moment that stands by
-        itself and is shareable. A picture carries at most one moment."""
+        itself. A picture carries at most one moment."""
         passes = 0
         while len(self.carriers) < self.slots and passes < MAX_PASSES:
             passes += 1
@@ -544,7 +560,6 @@ class CarrierAdmission:
                 break
         self.calls["selection_passes"] = passes
         self._keep_occasions()
-        self.calls["rejected_by_audience"] = len(self._rejected)
         self.calls["failed_standing"] = len(self.failed_standing)
         self.calls["kept_without_standing"] = len(self.kept_without_standing)
         self.carriers.sort(key=itemgetter("taken"))

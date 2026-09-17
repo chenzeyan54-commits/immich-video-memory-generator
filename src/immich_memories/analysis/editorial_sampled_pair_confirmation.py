@@ -311,6 +311,9 @@ class CachedSampledPairConfirmer:
         tiles: dict[str, AtlasTile],
         rows: list[dict[str, Any]],
         decisions: dict[int, SamePicturePairDecision],
+        distances: Sequence[int | None],
+        *,
+        episode_similarity: bool,
     ) -> None:
         results = confirm_same_picture_pairs(
             tuple(
@@ -320,9 +323,12 @@ class CachedSampledPairConfirmer:
             atlas=VisualAtlas(tuple(tiles.values())),
             requester=self._gateway,
             sheet_output_dir=self._sheet_dir,
+            # A hash-nominated pair carries its own qualified distance; without one
+            # the second positive arrangement remains necessary.
+            corroborating_distances=tuple(distances[index] for index in eligible),
             limits=self._limits,
-            # No hash shortcut: the second positive arrangement remains necessary.
             concurrency=1,
+            episode_similarity=episode_similarity,
         )
         for index, result in zip(eligible, results, strict=True):
             if (result.earlier_asset_id, result.later_asset_id) != nominated[index]:
@@ -338,8 +344,33 @@ class CachedSampledPairConfirmer:
         self,
         pairs: Sequence[tuple[str, str]],
         picture_records: Mapping[str, Mapping[str, Any]],
+        corroborating_distances: Sequence[int | None] | None = None,
+    ) -> tuple[tuple[SamePicturePairDecision, ...], dict[str, Any]]:
+        return self._confirm(pairs, picture_records, corroborating_distances, episode=False)
+
+    def confirm_episode_pairs(
+        self,
+        pairs: Sequence[tuple[str, str]],
+        picture_records: Mapping[str, Mapping[str, Any]],
+        corroborating_distances: Sequence[int | None] | None = None,
+    ) -> tuple[tuple[SamePicturePairDecision, ...], dict[str, Any]]:
+        """Ask about visual repetition once the caller has established a nearby episode."""
+        return self._confirm(pairs, picture_records, corroborating_distances, episode=True)
+
+    def _confirm(
+        self,
+        pairs: Sequence[tuple[str, str]],
+        picture_records: Mapping[str, Mapping[str, Any]],
+        corroborating_distances: Sequence[int | None] | None,
+        *,
+        episode: bool,
     ) -> tuple[tuple[SamePicturePairDecision, ...], dict[str, Any]]:
         nominated = tuple(pairs)
+        distances = (
+            tuple(corroborating_distances)
+            if corroborating_distances is not None
+            else (None,) * len(nominated)
+        )
         if any(
             len(pair) != 2
             or any(not isinstance(value, str) or not value for value in pair)
@@ -349,6 +380,8 @@ class CachedSampledPairConfirmer:
             raise ValueError("sampled pair nominations need two distinct source IDs")
         if len({frozenset(pair) for pair in nominated}) != len(nominated):
             raise ValueError("sampled picture pairs must not repeat, including reversed duplicates")
+        if len(distances) != len(nominated):
+            raise ValueError("sampled pair distances must align with their nominations")
         started = time.perf_counter()
         trace_start = len(self._trace.requests)
         rows: list[dict[str, Any]] = []
@@ -358,10 +391,16 @@ class CachedSampledPairConfirmer:
         for index, pair in enumerate(nominated):
             rows.append(self._routed_row(index, pair, picture_records, tiles, decisions, eligible))
         if eligible:
-            self._compare_routed(nominated, eligible, tiles, rows, decisions)
+            self._compare_routed(
+                nominated, eligible, tiles, rows, decisions, distances, episode_similarity=episode
+            )
         requests = self._trace.requests[trace_start:]
         audit: dict[str, Any] = {
-            "scope": "sampled picture relation only; no whole-video equality or cut authority",
+            "scope": (
+                "nearby episode visual similarity; no whole-video equality or cut authority"
+                if episode
+                else "sampled picture relation only; no whole-video equality or cut authority"
+            ),
             "nominated_pairs": len(nominated),
             "routed_pairs": len(eligible),
             "logical_requests": len(requests),

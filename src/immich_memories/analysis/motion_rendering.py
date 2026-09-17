@@ -67,11 +67,9 @@ def motion_renderings(
     Keyed by every still rather than by the first, because any of them may be
     the one selection keeps and the motion belongs to all of them equally.
 
-    `clock_offsets` measures how each burst's companions relate in time; when
-    it answers, the stitch windows are re-placed so joins are
-    content-continuous instead of midpoint-guessed (#1012). A join it cannot
-    measure keeps the metadata model, and a burst with nothing measured keeps
-    the metadata plan.
+    `clock_offsets` measures how each burst's companions relate in time. When
+    every join is measured, its windows are placed on the measured source clocks
+    (#1012). An unmeasurable join leaves the burst's stills as photographs.
     """
     from immich_memories.processing.live_photo_merger import cluster_live_photos
 
@@ -94,6 +92,18 @@ def motion_renderings(
         clip_durations=durations,
     ):
         material, members = _cluster_material(cluster, clock_offsets)
+        if len(members) < cluster.count:
+            # Removed aliases must neither trim nor connect the surviving footage.
+            # Re-cluster with the same measurements so projection reproduces the cuts.
+            found.update(
+                motion_renderings(
+                    members,
+                    config,
+                    companion_assets=companion_assets,
+                    clock_offsets=clock_offsets,
+                )
+            )
+            continue
         if material is None:
             continue
         rendering = MotionRendering(

@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from immich_memories.analysis.editorial_story_pick_contract import ask_moment_pick
+from immich_memories.analysis.editorial_story_pick_pages import page_shares, pick_pages
 
 MIN_GAP_IN_CAPTURE_GROUP_SECONDS = 300
 
@@ -262,7 +263,7 @@ def nearby_picture_alternatives(
 
 
 class _Chosen:
-    """The keys picked so far, under a ceiling that the model's larger vote can raise."""
+    """The keys picked so far, under a ceiling the grant sets and the larger vote settles."""
 
     def __init__(self, by_key: Mapping[str, DepictedChoice], compatible, limit: int) -> None:
         self.keys: list[str] = []
@@ -287,14 +288,11 @@ def _pick_rows(
     *,
     starred,
     kind_of,
-    pictures: Mapping[str, str],
     motions: Mapping[str, str],
 ) -> Callable[[DepictedChoice], str]:
     def row(c: DepictedChoice) -> str:
         star = " | favourite" if starred(c) else ""
         description = f"{labels[c.key]} | {c.taken[:16]} | {c.content[:140]} | {len(c.members)} picture(s){star}{kind_of(c)}"
-        if pictures.get(c.key):
-            description += f"\n  Proposed picture (cached preview only): {pictures[c.key]}"
         if motions.get(c.key):
             description += f"\n  Sampled sequence: {motions[c.key]}"
         return description
@@ -359,28 +357,28 @@ def _vote_both_orders(
     judge,
     *,
     story: Mapping[str, Any],
-    choices: Sequence[DepictedChoice],
-    row: Callable[[DepictedChoice], str],
+    rows: Sequence[str],
     by_label: Mapping[str, str],
     contract: str,
     count: int,
     allow_fewer: bool,
     sampled_motion: bool,
     vote_records: list,
+    suffix: str = "",
 ) -> list[list[str]]:
     kept_by_order = []
-    for order_name, order in (("source", list(choices)), ("reversed", list(reversed(choices)))):
+    for order_name, order in (("source", list(rows)), ("reversed", list(reversed(rows)))):
         prompt = _pick_prompt(
             contract,
             story,
-            "\n".join(row(c) for c in order),
+            "\n".join(order),
             count=count,
             allow_fewer=allow_fewer,
             sampled_motion=sampled_motion,
         )
         found = ask_moment_pick(
             judge,
-            f"story-pick-{story['key']}-{order_name}",
+            f"story-pick-{story['key']}{suffix}-{order_name}",
             prompt,
             labels=set(by_label),
             count=count,
@@ -389,6 +387,122 @@ def _vote_both_orders(
         )
         kept_by_order.append([by_label[m] for m in found])
     return kept_by_order
+
+
+@dataclass
+class _PickRequest:
+    """What every page of one story's pick shares: its rendered rows and its question.
+
+    ``rows``, ``labels`` and ``keys`` are parallel to the shortlist, so a page is a run of
+    positions in it.
+    """
+
+    story: Mapping[str, Any]
+    rows: Sequence[str]
+    labels: Sequence[str]
+    keys: Sequence[str]
+    contract: str
+    allow_fewer: bool
+    sampled_motion: bool
+    paged: bool
+
+
+def _vote_every_page(
+    judge,
+    request: _PickRequest,
+    groups: Sequence[Sequence[int]],
+    shares: Sequence[int],
+    *,
+    vote_records: list,
+) -> tuple[list[list[str]], list[dict]]:
+    """Ask every page in chronological order, rolling the slots one leaves unused into the next.
+
+    A page answers only for its own rows, so each request names a number the reader can
+    count. The story's vote is the union of theirs, in each order.
+    """
+    kept_by_order: list[list[str]] = [[], []]
+    audit: list[dict] = []
+    carried = 0
+    for number, (positions, share) in enumerate(zip(groups, shares, strict=True), 1):
+        asked = min(share + carried, len(positions))
+        votes: list[list[str]] = [[], []]
+        if asked:
+            votes = _vote_both_orders(
+                judge,
+                story=request.story,
+                rows=[request.rows[at] for at in positions],
+                by_label={request.labels[at]: request.keys[at] for at in positions},
+                contract=request.contract,
+                count=asked,
+                allow_fewer=request.allow_fewer,
+                sampled_motion=request.sampled_motion,
+                vote_records=vote_records,
+                suffix=f"-page-{number}" if request.paged else "",
+            )
+        kept_by_order[0].extend(votes[0])
+        kept_by_order[1].extend(votes[1])
+        kept = max(len(votes[0]), len(votes[1]))
+        carried = asked - kept
+        audit.append(
+            {
+                "page": number,
+                "offered": len(positions),
+                "share": share,
+                "kept": kept,
+                "unused_slots": carried,
+            }
+        )
+    return kept_by_order, audit
+
+
+def _vote_the_shortlist(
+    judge,
+    *,
+    story: Mapping[str, Any],
+    choices: Sequence[DepictedChoice],
+    count: int,
+    labels: Mapping[str, str],
+    motions: Mapping[str, str],
+    starred: Callable[[DepictedChoice], bool],
+    kind_of: Callable[[DepictedChoice], str],
+    contract: str,
+    vote_records: list,
+) -> tuple[list[list[str]], list[dict]]:
+    """Ask the shortlist in as few requests as the budget carries, splitting the grant between them.
+
+    One page is the question this stage has always asked, byte for byte. Several pages each
+    name a number their own rows can answer, which is what a large grant was failing at.
+    """
+    allow_fewer = count > 1
+    row = _pick_rows(labels, starred=starred, kind_of=kind_of, motions=motions)
+    rows = [row(c) for c in choices]
+    sampled_motion = any(motions.values())
+    overhead = len(
+        _pick_prompt(
+            contract, story, "", count=count, allow_fewer=allow_fewer, sampled_motion=sampled_motion
+        )
+    )
+    groups = pick_pages(rows, overhead=overhead)
+    shares = page_shares(
+        [len(group) for group in groups],
+        count,
+        favourite_pages=[
+            number
+            for number, group in enumerate(groups)
+            if any(starred(choices[position]) for position in group)
+        ],
+    )
+    request = _PickRequest(
+        story=story,
+        rows=rows,
+        labels=[labels[c.key] for c in choices],
+        keys=[c.key for c in choices],
+        contract=contract,
+        allow_fewer=allow_fewer,
+        sampled_motion=sampled_motion,
+        paged=len(groups) > 1,
+    )
+    return _vote_every_page(judge, request, groups, shares, vote_records=vote_records)
 
 
 def _fresh_relation(
@@ -475,44 +589,32 @@ def _uncontested_moments(
     return sorted(kept, key=lambda c: c.taken)
 
 
-def _lead_with_favourites(
-    choices: Sequence[DepictedChoice], chosen: _Chosen, *, story, count: int, starred
-) -> None:
-    """Favourites lead every slot on one day, or half the slots over several days. When they
-    already fill the grant, neither model order can change the resulting choice."""
-    days = int((story.get("seen") or {}).get("days") or 1)
-    lead = count if days <= 1 else max(1, count // 2)
-    for c in choices:
-        if starred(c) and len(chosen) < lead:
-            chosen.add(c.key)
-
-
 def _pick_material(
-    choices: Sequence[DepictedChoice], *, count: int, picture_of, motion_of, is_video
-) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
-    """Row labels and the previews shown beside them.
+    choices: Sequence[DepictedChoice], *, count: int, motion_of, is_video
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Row labels and the sampled sequences shown beside them.
 
-    The primary preview is acquired once per contested shortlisted choice; full
-    material/audience certification still happens at carrier admission.
+    Pictures are read from the inventory the story already produced. Images are
+    observed for the cut, at carrier admission, not for every offered choice.
     """
     labels = {c.key: f"M{i + 1:02d}" for i, c in enumerate(choices)}
-    pictures = {c.key: picture_of(c) for c in choices} if picture_of is not None else {}
     videos = [c for c in choices if is_video(c)]
     motions = (
         {c.key: motion_of(c) for c in videos}
         if count > 1 and len(videos) > 1 and motion_of is not None
         else {}
     )
-    return labels, {v: k for k, v in labels.items()}, pictures, motions
+    return labels, motions
 
 
 def _fill_from_votes(
     chosen: _Chosen, choices: Sequence[DepictedChoice], *, agreed, kept_by_order
 ) -> None:
-    """The favourite wins its moment. In a one-day story every starred moment leads; over several
-    days half the slots stay free for the span, so four favourites in a story's tail cannot hide
-    its beginning: starred moments lead, then what both orders named, then the rest of either
-    order, then even spacing."""
+    """What both orders named, then the rest of either order, then even spacing.
+
+    A star buys no slot here: it leads the rows the pick reads, and it wins the frame of the
+    moment the pick chooses, so a dense tail of favourites cannot hide a story's beginning.
+    """
     for k in (*agreed, *kept_by_order[0], *kept_by_order[1]):
         if len(chosen) >= chosen.limit:
             break
@@ -538,61 +640,41 @@ def pick_story_moments(
     compatible: Callable[[DepictedChoice, Sequence[DepictedChoice]], bool] = lambda _c, _others: (
         True
     ),
-    picture_of: Callable[[DepictedChoice], str] | None = None,
     motion_of: Callable[[DepictedChoice], str] | None = None,
     is_video: Callable[[DepictedChoice], bool] = lambda _c: False,
 ) -> list[DepictedChoice]:
-    """Compare contributions within a ceiling, preserving the favourite floor.
+    """Compare contributions within a ceiling; only one offered moment leaves nothing to ask.
 
     Both orders may explicitly decline repetitive depth. Their larger complete
     vote caps the result; disagreement about identity cannot manufacture depth.
     """
-    if count >= len(choices) and (len(choices) <= 1 or all(starred(c) for c in choices)):
+    # A grant that reaches the only moment offered has nothing to ask. Everything else is a
+    # question: which moments tell the story, and whether a further view earns a slot at all.
+    # Stars answer neither. The favourite wins the frame of its own moment, not its story's slot.
+    if count >= len(choices) and len(choices) <= 1:
         return _uncontested_moments(choices, starred=starred, compatible=compatible)
     if count <= 0:
         return []
     count = min(count, len(choices))
     by_key = {c.key: c for c in choices}
     chosen = _Chosen(by_key, compatible, count)
-    _lead_with_favourites(choices, chosen, story=story, count=count, starred=starred)
-    if len(chosen) == count:
-        record(
-            f"story-pick-{story['key']}",
-            {
-                "count": count,
-                "orders": [],
-                "agreed": [],
-                "chosen": chosen.keys,
-                "reason": "favourites fill the grant",
-            },
-        )
-        return sorted((c for c in choices if c.key in chosen.keys), key=lambda c: c.taken)
-    labels, by_label, pictures, motions = _pick_material(
-        choices, count=count, picture_of=picture_of, motion_of=motion_of, is_video=is_video
-    )
+    labels, motions = _pick_material(choices, count=count, motion_of=motion_of, is_video=is_video)
     vote_records: list = []
-    allow_fewer = count > 1
-    kept_by_order = _vote_both_orders(
+    kept_by_order, page_audit = _vote_the_shortlist(
         judge,
         story=story,
         choices=choices,
-        row=_pick_rows(
-            labels,
-            starred=starred,
-            kind_of=kind_of,
-            pictures=pictures,
-            motions=motions,
-        ),
-        by_label=by_label,
-        contract=contract,
         count=count,
-        allow_fewer=allow_fewer,
-        sampled_motion=any(motions.values()),
+        labels=labels,
+        motions=motions,
+        starred=starred,
+        kind_of=kind_of,
+        contract=contract,
         vote_records=vote_records,
     )
-    # Respect the larger complete vote, while preserving the owner's favourite floor.
+    # Respect the larger complete vote, never more.
     # Disagreement over *which* one view wins cannot turn two one-view votes into two slots.
-    chosen.limit = max(len(chosen), *(len(order) for order in kept_by_order))
+    chosen.limit = max(len(order) for order in kept_by_order)
     agreed = [k for k in kept_by_order[0] if k in set(kept_by_order[1])]
     _fill_from_votes(chosen, choices, agreed=agreed, kept_by_order=kept_by_order)
     chosen_keys = chosen.keys[: chosen.limit]
@@ -615,8 +697,8 @@ def pick_story_moments(
             "chosen": chosen_keys,
             "company_replacements": company_replacements,
             "company_rejected": sorted(company_rejected),
-            "observed_choices": list(pictures),
             "motion_choices": {k: v for k, v in motions.items() if v},
+            "pages": page_audit,
             "editorial_limit": chosen.limit,
             "vote_records": vote_records,
         },

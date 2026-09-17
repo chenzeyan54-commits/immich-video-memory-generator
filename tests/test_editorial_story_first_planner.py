@@ -2,6 +2,7 @@
 
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -17,7 +18,10 @@ from immich_memories.analysis.editorial_moment_wall import (
     RepresentativeEvidence,
 )
 from immich_memories.analysis.editorial_people import adapt_editorial_people
-from immich_memories.analysis.editorial_structure_contract import StructurePlanningInput
+from immich_memories.analysis.editorial_structure_contract import (
+    EpisodeReadingCard,
+    StructurePlanningInput,
+)
 from immich_memories.analysis.moment_cards import MomentCard
 from immich_memories.analysis.selection_source_groups import EditorialGroup
 from immich_memories.api.models import AssetType
@@ -31,13 +35,17 @@ SKIPPED_STAGES = ("threads", "synthesis", "structure", "ladder", "review", "asse
 
 
 def make_source(tmp_path, *, seconds=60, occasions=4, pictures=3):
-    """One month of separate canal walks, each its own capture moment."""
-    start = datetime(2030, 5, 2, 8, tzinfo=UTC)
+    """One day of separate canal walks, each its own capture moment.
+
+    One day, because an episode is one day: a judge that alternates between two episodes can
+    only produce two of them while the occasions it alternates over share a date.
+    """
+    start = datetime(2030, 5, 2, tzinfo=UTC)
     groups, episodes, cards, candidates, annotations = [], [], [], [], {}
     for occasion in range(occasions):
         local = []
         for picture in range(pictures):
-            taken = start + timedelta(days=occasion, minutes=17 * picture)
+            taken = start + timedelta(minutes=90 * occasion + 17 * picture)
             asset = make_asset(f"o{occasion}-p{picture}", duration=None, file_created_at=taken)
             asset.type = AssetType.IMAGE
             description = (
@@ -118,6 +126,18 @@ def make_source(tmp_path, *, seconds=60, occasions=4, pictures=3):
         lineage={},
         bank_dir=tmp_path / "banks",
         artifact_dir=tmp_path / "plan",
+        episode_readings={
+            alias: EpisodeReadingCard(
+                episode_id=card.episode_id,
+                evidence_key=f"evidence-{card.episode_id}",
+                what_happened=(
+                    f"A walk along the canal on outing {index}, from the first view to the last."
+                ),
+                representative_asset_ids=card.representative_asset_ids,
+                cache_hit=False,
+            )
+            for index, (alias, card) in enumerate(zip(wall.aliases, cards, strict=True))
+        },
     )
 
 
@@ -126,11 +146,8 @@ class StoryJudge(AnnualJudge):
 
     def answer(self, stage, prompt):
         if stage.startswith("story-episodes"):
-            known, new = prompt.split("NEW FRAGMENTS TO PLACE", 1)
-            offered = re.findall(r'"reading": "([^"]+)"', new)
-            open_ids = list(dict.fromkeys(re.findall(r'"id": "(S\d{4})"', known)))
-            fresh = list(re.search(r"Number new episodes (S\d{4}), (S\d{4})", prompt).groups())
-            ids = (open_ids + [i for i in fresh if i not in open_ids])[:2]
+            offered = re.findall(r'"reading": "(r\d+)"', prompt)
+            ids = list(re.search(r"Number new episodes (S\d{4}), (S\d{4})", prompt).groups())
             return json.dumps(
                 {
                     "fragments": [
@@ -145,7 +162,6 @@ class StoryJudge(AnnualJudge):
                             "role": "central" if position == 0 else "supporting",
                         }
                         for position, key in enumerate(ids)
-                        if key not in open_ids
                     ],
                 }
             )
@@ -235,7 +251,28 @@ def test_story_first_selects_one_picture_per_depicted_moment_without_beats_or_la
     assert any(stage.startswith("standing-") for stage in asked), (
         "every carrier is asked to stand by itself"
     )
+    assert all(
+        "Proposed picture" not in call["prompt"]
+        for call in judge.calls
+        if call["stage"].startswith("story-pick-")
+    ), "the pick reads the inventory; pictures are observed for the cut, not for every choice"
     assert all(carrier["story_weight"] in {"dominant", "minor"} for carrier in plan["carriers"])
+
+    families = plan["calls_by_stage"]
+    assert set(families) <= {
+        "period",
+        "episodes",
+        "episode-skim",
+        "worthy",
+        "story-episodes",
+        "story-understanding",
+        "story-weighing",
+        "story-pick",
+        "moment-inventory",
+        "standing",
+        "shareability",
+    }, sorted(families)
+    assert sum(row["asked"] for row in families.values()) == len(plan["calls"])
 
     assert plan["intent_report"]["status"] in {
         "ok",
@@ -244,6 +281,90 @@ def test_story_first_selects_one_picture_per_depicted_moment_without_beats_or_la
         "planning_incomplete",
     }
     assert plan["content_seconds"] <= plan["target_seconds"]
+
+
+def _inventory_offers(judge):
+    """Per story, what its moment inventory was shown: source aliases, capture groups, timestamps."""
+    offers = {}
+    for row in judge.calls:
+        if not row["stage"].startswith("moment-inventory"):
+            continue
+        page = row["prompt"].split("NEW SOURCES", 1)[1]
+        offer = offers.setdefault(row["stage"].rsplit("-", 1)[0], {})
+        for field, pattern in (
+            ("sources", r'"source": "(U\d+)"'),
+            ("groups", r'"capture_group": "(G\d+)"'),
+            ("taken", r'"taken": "([^"]+)"'),
+        ):
+            offer.setdefault(field, set()).update(re.findall(pattern, page))
+    return offers
+
+
+def test_inventory_reads_only_the_shortlisted_capture_groups(tmp_path):
+    """Two eight-outing stories, two slots each: the inventory reads the six capture groups the
+    grant can still reach, not all eight."""
+    captured = make_source(tmp_path, seconds=16, occasions=16, pictures=5)
+    judge = StoryJudge()
+    plan = run(captured, judge)
+
+    scope = json.loads(
+        next(captured.artifact_dir.rglob("story-inventory-scope.private.json")).read_text()
+    )
+    assert len(scope) == 2
+    for row in scope.values():
+        assert row["groups_offered"] == 8
+        assert row["groups_shortlisted"] == 6
+        assert row["units_inventoried"] == 30
+
+    offers = _inventory_offers(judge)
+    assert len(offers) == 2
+    for offer in offers.values():
+        assert len(offer["groups"]) == 6
+        assert len(offer["sources"]) <= 30
+    # every carrier comes from a group the inventory actually read
+    read = set().union(*(offer["taken"] for offer in offers.values()))
+    assert {row["taken"] for row in plan["carriers"]} <= read
+    assert plan["calls_by_stage"]["moment-inventory"]["asked"] == 4
+
+
+class LastMomentJudge(StoryJudge):
+    """Keeps the last moment every story offers, in either reading order."""
+
+    def answer(self, stage, prompt):
+        if stage.startswith("story-pick-"):
+            count = int(re.search(r"gets (\d+) picture", prompt).group(1))
+            labels = sorted(re.findall(r"^(M\d{2}) \|", prompt, re.MULTILINE))
+            return json.dumps({"keep": labels[-count:]})
+        return super().answer(stage, prompt)
+
+
+def test_a_starred_story_is_inventoried_and_its_pick_is_still_asked(tmp_path):
+    """One slot, one starred outing, two outings to choose between: the star settles nothing."""
+    captured = make_source(tmp_path, seconds=8, occasions=4, pictures=3)
+    captured = replace(
+        captured,
+        assets={
+            key: asset.model_copy(update={"is_favorite": key == "o0-p1"})
+            for key, asset in captured.assets.items()
+        },
+    )
+    judge = LastMomentJudge()
+    plan = run(captured, judge)
+
+    starred = {  # the starred story holds the first and third outings
+        captured.assets[f"o{occasion}-p{picture}"].file_created_at.isoformat()
+        for occasion in (0, 2)
+        for picture in range(3)
+    }
+    offers = _inventory_offers(judge)
+    assert len(offers) == 2  # the starred story is read like any other
+    assert set().union(*(offer["taken"] for offer in offers.values())) & starred
+
+    asked = [call["stage"] for call in judge.calls if call["stage"].startswith("story-pick-")]
+    assert len(asked) == 2 * len(offers)  # two reading orders per story, the starred one included
+    carried = {row["asset_id"] for row in plan["carriers"]}
+    assert "o2-p2" in carried  # the last moment of the starred story, which the pick named
+    assert "o0-p1" not in carried  # the star is an indicator, not the story's slot
 
 
 @pytest.mark.parametrize("old_switch", [None, "0", "1"])
@@ -413,9 +534,9 @@ def test_timing_trim_drops_the_lightest_stories_extra_pictures_first_and_refits_
 class CompanyReplacementJudge(StoryJudge):
     """Prefer two familiar views; let the production company rule improve them."""
 
-    def __init__(self, *, alternative=False):
+    def __init__(self, *, weak=False):
         super().__init__()
-        self.alternative = alternative
+        self.weak = weak
 
     def answer(self, stage, prompt):
         if stage.startswith("story-weighing"):
@@ -425,20 +546,20 @@ class CompanyReplacementJudge(StoryJudge):
             # WHY: both reading orders agree on the same moments before the company rule.
             labels = sorted(re.findall(r"^(M\d{2}) \|", prompt, re.MULTILINE))
             return json.dumps({"keep": labels[:2]})
-        raw = super().answer(stage, prompt)
-        if self.alternative and stage.startswith("moment-inventory"):
-            result = json.loads(raw)
-            primary, alternative = result["moments"][-2:]
-            primary["sources"].extend(alternative["sources"])
-            result["moments"].pop()
-            return json.dumps(result)
-        return raw
+        if stage.startswith("standing-") and self.weak:
+            rows = re.findall(r"^(P\d+): (.*)$", prompt, re.MULTILINE)
+            return json.dumps(
+                {"weak": {label: "An object on its own" for label, row in rows if "bowl" in row}}
+            )
+        return super().answer(stage, prompt)
 
 
-def _company_selection(tmp_path, relations, *, alternative=False):
-    """Use the real story/inventory/standing pipeline with controlled admission evidence."""
+@pytest.mark.parametrize("weak", [False, True])
+def test_company_improvement_only_takes_a_fresh_relation_that_stands(tmp_path, weak):
+    """The real story, inventory and standing pipeline; only the standing votes differ."""
     from immich_memories.analysis.editorial_story_planner import select_story_first
 
+    relations = ["parent", "parent", "grandparent", "parent", "parent"]
     source = make_source(tmp_path, seconds=7, occasions=1, pictures=len(relations))
     assets = list(source.assets)
     alias = next(iter(source.moment_asset_ids))
@@ -456,13 +577,17 @@ def _company_selection(tmp_path, relations, *, alternative=False):
         asset_id: f"{source.annotations[asset_id]} | with Relative ({relation})"
         for asset_id, relation in zip(assets, relations, strict=True)
     }
+    held = assets[2]
+    # WHY: the planner reads life from the picture's own text. The one fresh relation sits on a
+    # lone object, so the two standing orders decide it; a picture with life inside a major
+    # story stands whatever those orders say.
+    lines[held] = (
+        f"{units[2]['taken']} | A ceramic bowl sits alone on a table. | activity=none"
+        f" | with Relative ({relations[2]})"
+    )
     records = {}
-    judge = CompanyReplacementJudge(alternative=alternative)
-    # WHY: this injected admission port represents an already-established audience hold;
-    # story reading, inventory, standing and final carrier selection execute normally.
-    rejected = {assets[2]}
     selection = select_story_first(
-        judge=judge,
+        judge=CompanyReplacementJudge(weak=weak),
         tables={},
         aliases=[alias],
         factual_rows_fn=lambda _tables, _aliases: [
@@ -476,47 +601,142 @@ def _company_selection(tmp_path, relations, *, alternative=False):
         anchor_label={"outing": "F01"},
         label_line=lambda unit: lines[unit["asset_id"]],
         quality=lambda _asset: 1.0,
+        life=lambda asset_id: asset_id != held,
         target_seconds=7,
         seconds_per_slot=3.5,
         record=lambda name, value: records.update({name: value}),
-        shareable=lambda unit: unit["asset_id"] not in rejected,
         family_tier={"outing": 0},
     )
+
     pick = next(value for key, value in records.items() if key.startswith("story-pick-"))
-    return selection, assets, pick
+    chosen = [carrier["asset_id"] for carrier in selection.carriers]
+    if weak:
+        # Later familiar views make a lost choice observable: a refill would choose their midpoint.
+        assert chosen == assets[:2]
+        assert pick["company_replacements"] == []
+    else:
+        assert chosen == [assets[0], held]
+        assert [row["new_relations"] for row in pick["company_replacements"]] == [["grandparent"]]
+    assert selection.calls["selection_passes"] == 1
 
 
-def test_rejected_optional_company_replacement_keeps_the_original_selected_picture(tmp_path):
-    selection, assets, pick = _company_selection(
-        tmp_path, ["parent", "parent", "grandparent", "parent", "parent"]
+def test_the_audience_reads_the_finished_cut_not_every_candidate(tmp_path):
+    class RefusingJudge(StoryJudge):
+        """Holds back one named picture whenever the audience gate reads it."""
+
+        def answer(self, stage, prompt):
+            if stage.startswith("shareability-") and "outing 1, view 2" in prompt:
+                return json.dumps({"finding": "bathing", "why": "A person is bathing"})
+            return super().answer(stage, prompt)
+
+    plan = run(replace(make_source(tmp_path), audience="sendable"), RefusingJudge())
+
+    refused = [row["asset_id"] for row in plan["shareability"]["tightened"]]
+    assert refused == ["o1-p2"]
+    assert "o1-p2" not in {carrier["asset_id"] for carrier in plan["carriers"]}
+    assert plan["calls_by_stage"]["shareability"]["asked"] <= len(plan["carriers"]) + len(refused)
+
+
+def test_each_moment_carries_its_episodes_banked_meaning_and_representatives():
+    """The wall truncates the episode reading to 96 characters; planning gets the whole one."""
+    from immich_memories.analysis.editorial_structure_source import episode_reading_cards
+    from immich_memories.analysis.selection_source_groups import EditorialGroupProjection
+    from immich_memories.analysis.text_episode_reader import (
+        EpisodeEditorialEvidence,
+        TextEpisodeReadResult,
+    )
+    from immich_memories.store.episode_readings import (
+        BankedEpisodeReading,
+        EpisodeReadingIdentity,
+        EpisodeRepresentative,
     )
 
-    # Later familiar views make a lost choice observable: a refill would choose their midpoint.
-    assert [carrier["asset_id"] for carrier in selection.carriers] == assets[:2]
-    assert pick["company_replacements"] == []
-    assert selection.calls["selection_passes"] == 1
-    assert selection.calls["rejected_by_audience"] == 1
-
-
-def test_rejected_optional_company_replacement_tries_the_next_eligible_new_relation(tmp_path):
-    selection, assets, pick = _company_selection(
-        tmp_path, ["parent", "parent", "grandparent", "sibling", "parent", "parent"]
+    candidates = tuple(
+        EditorialCandidate(
+            asset_id=f"a{index}",
+            taken_at=datetime(2030, 5, 2, 8 + index, tzinfo=UTC),
+            media_kind="photo",
+            live_photo_stitch_member_ids=(),
+            rendering_family_id=None,
+            favourite=False,
+            source=make_asset(f"a{index}", duration=None),
+            proposed_segment=None,
+            shippable_duration=0,
+            grounded_annotations=(),
+        )
+        for index in range(3)
+    )
+    group = EditorialGroup("episode-read", candidates)
+    identity = EpisodeReadingIdentity("episode-read", "producer", "evidence-key")
+    reading = BankedEpisodeReading(
+        identity,
+        group.candidate_ids,
+        "A long afternoon at the canal that the wall can only show the first 96 characters of.",
+        (EpisodeRepresentative("a1", "Shows the outing"),),
+        (),
+    )
+    episodes = TextEpisodeReadResult(
+        (
+            EpisodeEditorialEvidence(
+                EditorialGroupProjection(group, group.candidate_ids), identity, reading, True, None
+            ),
+        ),
+        SimpleNamespace(),
+        (),
+        0,
+    )
+    cards = (
+        MomentCard(
+            moment_id="moment-read",
+            episode_id="episode-read",
+            full_asset_ids=group.candidate_ids,
+            selectable_asset_ids=group.candidate_ids,
+            representative_asset_ids=("a0",),
+            text="Walking by the canal",
+            evidence=MomentCardEvidence(
+                episode_meaning="A long afternoon at the canal.",
+                representatives=(RepresentativeEvidence("A view.", "Shows it."),),
+                annotations=(),
+            ),
+        ),
+        MomentCard(
+            moment_id="moment-unread",
+            episode_id="episode-unread",
+            full_asset_ids=("a2",),
+            selectable_asset_ids=("a2",),
+            representative_asset_ids=("a2",),
+            text="Later",
+            evidence=MomentCardEvidence(
+                episode_meaning="Later that day.",
+                representatives=(RepresentativeEvidence("A view.", "Shows it."),),
+                annotations=(),
+            ),
+        ),
     )
 
-    assert [carrier["asset_id"] for carrier in selection.carriers] == [assets[0], assets[3]]
-    assert [row["new_relations"] for row in pick["company_replacements"]] == [["sibling"]]
-    assert selection.calls["selection_passes"] == 1
-    assert selection.calls["rejected_by_audience"] == 1
+    carried = episode_reading_cards(episodes, cards, ("M001", "M002"))
 
-
-def test_optional_company_replacement_can_use_a_permitted_standing_alternative(tmp_path):
-    selection, assets, pick = _company_selection(
-        tmp_path, ["parent", "parent", "grandparent", "grandparent"], alternative=True
+    assert carried["M001"].what_happened == reading.what_happened
+    assert carried["M001"].representative_asset_ids == ("a1",)
+    assert (carried["M001"].episode_id, carried["M001"].evidence_key) == (
+        "episode-read",
+        "evidence-key",
     )
+    assert carried["M001"].cache_hit is True
+    unread = carried["M002"]
+    assert (unread.what_happened, unread.evidence_key, unread.cache_hit) == ("", "", False)
+    assert unread.representative_asset_ids == ("a2",)
 
-    # In a major story a lively alternative stands with context even before its own ballot.
-    assert [carrier["asset_id"] for carrier in selection.carriers] == [assets[0], assets[3]]
-    assert all(carrier["story_weight"] == "major" for carrier in selection.carriers)
-    assert [row["new_relations"] for row in pick["company_replacements"]] == [["grandparent"]]
-    assert selection.calls["selection_passes"] == 1
-    assert selection.calls["rejected_by_audience"] == 1
+
+def test_the_story_read_sees_the_banked_episode_meaning_and_representatives(tmp_path):
+    """The wall row truncates the episode reading to 96 characters; the story read gets it whole."""
+    judge = StoryJudge()
+    run(make_source(tmp_path), judge)
+
+    pages = [call["prompt"] for call in judge.calls if call["stage"].startswith("story-episodes")]
+    assert pages
+    assert all(
+        "A walk along the canal on outing 0, from the first view to the last." in page
+        for page in pages[:1]
+    )
+    assert not any("People walk along the canal." in page for page in pages)

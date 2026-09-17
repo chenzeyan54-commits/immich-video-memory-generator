@@ -71,17 +71,23 @@ def test_nearby_comparison_preserves_favourites_and_audience_holds(tmp_path, fav
         assert selected == {"o0-p0", "o1-p0"}  # existing starred capture-group narrowing
     else:
         assert selected and all(any(a.startswith(f"o{i}-") for a in selected) for i in range(2))
+        # The hold lands on the finished cut, and each outing's own earlier picture stands in.
+        assert {row["from"]: row["to"] for row in plan["shareability"]["substituted"]} == {
+            "o0-p1": "o0-p0",
+            "o1-p1": "o1-p0",
+        }
     assert not {"o0-p1", "o1-p1"} & selected
     assert len(selected) <= 4
 
 
-def test_actual_planner_compares_bound_preview_observations_before_admission(tmp_path):
+def test_actual_planner_observes_the_admitted_pictures_and_not_every_choice(tmp_path):
     from immich_memories.analysis.editorial_structure_contract import StructurePlannerPorts
     from immich_memories.analysis.editorial_structure_planner import plan_structure
     from tests.test_editorial_visual_body_audience import picture_record
 
     observed = []
 
+    # WHY: the image gateway; one entry per vision call the run actually pays for.
     def observe(asset_id):
         observed.append(asset_id)
         record = picture_record()
@@ -90,12 +96,11 @@ def test_actual_planner_compares_bound_preview_observations_before_admission(tmp
         )
         return record
 
+    # WHY: the editorial judge; the pick answers from the inventory, with no preview line.
     class ObservedJudge(CompanyJudge):
         def answer(self, stage, prompt):
             if stage.startswith("story-pick-"):
-                assert "Proposed picture (cached preview only):" in prompt
-                assert "picture observations: A clothed participant shares the outing" in prompt
-                assert observed  # acquisition precedes the first choice, not just its admission
+                assert "Proposed picture" not in prompt
             return super().answer(stage, prompt)
 
     captured = nearby_source(tmp_path)
@@ -109,7 +114,11 @@ def test_actual_planner_compares_bound_preview_observations_before_admission(tmp
             observe_picture=observe,
         ),
     ).plan
-    assert len(observed) == len(set(observed)) == 6
+    carried = {member for row in plan["carriers"] for member in row["members"]}
+    assert len(observed) == len(set(observed))
+    # The cut and whatever the final duplicate review asks about it, never the shortlist.
+    assert set(observed) == carried == set(plan["picture_facts"])
+    assert carried < set(captured.assets)  # the shortlist offered more than the cut admitted
     assert len(plan["carriers"]) == 4
     assert all("picture observations" not in line for line in captured.annotations.values())
 
@@ -170,3 +179,17 @@ def test_nearby_nomination_is_bounded_and_respects_the_owners_representative():
         nearby_picture_alternatives(choices[:1], choices, units, starred=lambda c: c.key == "0")
         == []
     )
+
+
+def test_standing_weighs_primaries_and_nearby_extras_in_one_packed_round(tmp_path):
+    """Both lists ride in the same blocks, so a pass asks the two established orders once."""
+    captured = nearby_source(tmp_path)
+    plan = run(captured, CompanyJudge())
+    passes = len(list(captured.artifact_dir.rglob("story-shortlist-pass-*.private.json")))
+    standing = [call["stage"] for call in plan["calls"] if call["stage"].startswith("standing-")]
+    assert passes >= 1
+    # Every picture a pass weighs fits one block, so the whole run asks the two established
+    # orders once. Separate rounds for the primaries and for the nearby extras asked four.
+    assert len(standing) == 2, standing
+    assert len(standing) <= 2 * passes
+    assert plan["calls_by_stage"]["standing"]["asked"] == len(standing)

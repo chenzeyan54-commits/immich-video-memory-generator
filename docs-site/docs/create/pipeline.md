@@ -25,7 +25,7 @@ flowchart TD
     end
 
     prep --> episodes["Reading event evidence: i/n"]
-    episodes --> period["Reading the period account: page n"]
+    episodes --> period["Reading the period account: month"]
     period --> cards["Building editorial cards"]
     cards --> edit["Editing the memory"]
     edit --> timing["Validating selected source timing"]
@@ -91,6 +91,12 @@ decisions are cached by producer and input.
 Coverage is checked, not assumed. Required source and annotation coverage is verified before
 selection, and an incomplete run is never reported as complete.
 
+Large annual memories are read in batches. Each story-weighting batch keeps the period's account
+and main-story context, with at most 60 stories in its initial request. If the possible main stories
+would crowd out a batch, they are compared first; every story is still evaluated afterward. A batch
+that returns missing decisions or repeatedly truncated text is split into smaller groups while
+keeping parts of the same occasion together. All batches must finish before the decisions are used.
+
 The shipped design (the source model, the annotation store and its banks, the six stages, the two
 readings, the structure and story planners, carriers and durable attempts) is written up in
 [Story-first selection](https://github.com/sam-dumont/immich-video-memory-generator/blob/main/docs/designs/2026-09-10-story-first-selection.md)
@@ -128,12 +134,21 @@ all 653 decisions exactly while removing 30 % of the calls, and the first change
 at 12. That 10 is a constant in the code, not a setting.
 
 **3. The final film, over what actually shipped.** The pictures in the cut are checked against each
-other again. A pair is nominated when either signal fires: hashes within 10 bits, or descriptions
-that read as the same thing (Jaccard over words of four letters or more, at 0.60). That 0.60 is the
-knee of a measured curve over 1,124,250 real pairs from the cache: 0.60 collapses 33 pairs, 0.55
-collapses 74, 0.50 collapses 135. The count triples per step below it, which is where genuinely
-different shots start merging. Nominated pairs are then asked as pairs, by the same question as
-step 2.
+other again. A pair is nominated when any of three signals fires: hashes within 10 bits,
+descriptions that read as the same thing (Jaccard over words of four letters or more, at 0.60), or
+the same capture episode within the 90-minute window. That 0.60 is the knee of a measured curve over
+1,124,250 real pairs from the cache: 0.60 collapses 33 pairs, 0.55 collapses 74, 0.50 collapses 135.
+The count triples per step below it, which is where genuinely different shots start merging.
+Nominated pairs are then asked as pairs, by the same question as step 2.
+
+The episode signal is there because the other two miss the obvious case. Two frames of the same
+minute on a dark bus, shot from slightly different angles, have distant hashes and get two
+unrelated descriptions, so nothing ever put them side by side and both shipped. A pair that only
+its episode nominated is asked a different question, whether the two show similar content so that
+keeping one avoids repetition, and it always needs both arrangements to agree: the corroboration
+distance of step 2 was measured on the same-picture question, so it buys nothing here. Pair work
+stays inside the same fixed bound of twice the number of pictures in the cut, and a comparison the
+bound cut short keeps both pictures and says so in the record.
 
 Which one survives, in order: protected carriers, favourites, pictures with a known quality figure,
 quality itself, capture time, then asset id. A favourited copy wins even at a lower resolution: you
@@ -190,7 +205,7 @@ The stage names are what the run reports: a row on the Memory page, a line in th
 |---|---|---|
 | **Reading dates, places and people** | The source model, then preparation per producer: previews, pixel facts, the encoder with six context heads, the two detectors, and on `full` one caption per picture. Nothing banked is produced twice | previews over the network; captions remotable; heads, detectors and pixels on this box or the [inference service](../deploy/installation/inference-service.md) |
 | **Reading event evidence: i/n** | Paged episode reading over the annotation lines, the cull asked inside each episode. Banked per group and evidence key | the reader |
-| **Reading the period account** | The period read as an account with a thesis, one bounded repair if malformed. Banked | the reader |
+| **Reading the period account** | The banked episode readings placed into day episodes, one page per calendar month, then one thesis over all of them. One bounded repair if malformed. Banked | the reader |
 | **Building editorial cards** | One card per moment, rendered into the wall the planner reads | this box, cheap |
 | **Editing the memory** | The structure and story planners: the memory-worthy gate, story weighing, moment picks, standing gate, audience checks. Each a banked question, the gates asked in two orders. Motion is measured for the chosen Live carriers | the reader; motion locally |
 | **Validating selected source timing** | Intervals bound to their sources, duration realised | this box, cheap |
@@ -208,17 +223,17 @@ hardware encoder, a lower resolution and fewer clips.
 
 ### What overlaps, and what cannot
 
-Reading is mostly a queue of one. Each page of the period account carries the episodes still open
-from the pages before it, so page 5 cannot be asked until page 4 has answered, and every pick below
-reads the stages above. Two places hold independent questions: the moment inventory of one event
-knows nothing about the next event's, and the worthiness and standing gates ask in blocks of twelve
-that do not see each other. Those are what `advanced.llm.reader_concurrency` overlaps, and nothing
-else in the reading can be made to overlap by raising it.
+Reading is mostly a queue of one, and every pick below reads the stages above. Three places hold
+independent questions: the period account is read one calendar month per page and no month sees
+another, the moment inventory of one event knows nothing about the next event's, and the worthiness
+and standing gates ask in blocks of twelve that do not see each other. Those are what
+`advanced.llm.reader_concurrency` overlaps, and nothing else in the reading can be made to overlap
+by raising it.
 
 ```mermaid
 flowchart TB
     packs["Event evidence, pack by pack"]
-    packs --> pages["The period account, page by page:<br/>each page carries the episodes still open"]
+    packs --> pages["The period account, one page per calendar month:<br/>no page sees another"]
     pages --> synthesis["The synthesis: one thesis over every episode"]
 
     synthesis --> worthy
@@ -253,7 +268,9 @@ queue instead of overlapping.
 
 - **Originals** of the selected sources are downloaded (3 workers by default,
   `analysis.download_workers`) and each interval trimmed with FFmpeg. A Live Photo chosen for its
-  motion plays its video; one chosen as a still is held.
+  motion plays its video; one chosen as a still is held. Live companions of different sizes
+  are fitted to a common frame without stretching or changing their selected timing.
+  ProRes MOV clips keep their original video, HDR metadata and audio during trimming.
 - **Photos** render frame by frame in Python: Ken Burns is a `cv2.warpAffine` per frame at 30 fps
   for the seconds granted, two of them on the blurred-background path. HEIC decode and gain-map HDR
   happen here, and sources are capped at 1.5x the output size.

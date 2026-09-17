@@ -21,12 +21,17 @@ from typing import Any
 
 from immich_memories.analysis.editorial_moment_inventory import inventory_event
 from immich_memories.analysis.editorial_reader_concurrency import reader_map
-from immich_memories.analysis.editorial_story_carriers import CarrierAdmission, StandingGate
+from immich_memories.analysis.editorial_story_carriers import (
+    CarrierAdmission,
+    StandingGate,
+    choice_is_starred,
+    shortlist_by_partition,
+)
 from immich_memories.analysis.editorial_story_pick_contract import source_kind_marker
 from immich_memories.analysis.editorial_story_reading import (
     PeriodStory,
     read_period_story,
-    story_evidence_rows,
+    story_episode_rows,
 )
 from immich_memories.analysis.editorial_story_replies import WEIGHT_ROLE, WEIGHTS, relations_on
 from immich_memories.analysis.editorial_story_shortlist import (
@@ -48,6 +53,8 @@ class StorySelection:
     alternatives_of: dict[str, list[str]]
     slots: int
     calls: dict[str, int]
+    # The annotation line of every unit, so a replacement carrier can describe itself.
+    lines: Mapping[str, str]
 
     def record(self) -> dict[str, Any]:
         return {
@@ -255,14 +262,64 @@ class _DayInventory:
         )
 
 
-def _inventory_jobs(stories, granted, *, partition_grants, episode_of, units, parts):
-    jobs = []
+def _shortlisted_units(
+    stories: Sequence[Mapping[str, Any]],
+    granted: Mapping[str, int],
+    partition_grants: Mapping[str, Mapping[str | None, int]],
+    choices_of: Mapping[str, list[DepictedChoice]],
+    parts: PartitionedSlots,
+    unit_by_asset: Mapping[str, Any],
+    *,
+    starred: Callable[[DepictedChoice], bool],
+    life: Callable[[str], bool],
+    kind_of: Callable[[DepictedChoice], str],
+) -> dict[str, set[str]]:
+    """Per funded story, the pictures its slots can still land on: every member of the capture
+    groups its own shortlist keeps. A group is offered whole, because a competing nearby view
+    exists only inside one. Every funded story is read, whatever the owner starred: a shortlist
+    that only just covers the grant is exactly where the inventory, not the pick, finds the story
+    a further moment inside a group it already holds."""
+    allowed: dict[str, set[str]] = {}
     for s in stories:
         if granted[s["key"]] == 0:
             continue
+        short = shortlist_by_partition(
+            choices_of[s["key"]],
+            partition_grants[s["key"]],
+            parts,
+            unit_by_asset,
+            starred=starred,
+            life=life,
+            kind_of=kind_of,
+        )
+        allowed[s["key"]] = {a for c in short for a in c.members}
+    return allowed
+
+
+def _inventory_scope(stories, granted, choices_of, allowed) -> dict[str, dict[str, Any]]:
+    scope = {}
+    for s in stories:
+        if granted[s["key"]] == 0:
+            continue
+        spendable = allowed.get(s["key"], set())
+        scope[s["key"]] = {
+            "groups_offered": len(choices_of[s["key"]]),
+            "groups_shortlisted": sum(
+                1 for c in choices_of[s["key"]] if not spendable.isdisjoint(c.members)
+            ),
+            "units_inventoried": len(spendable),
+        }
+    return scope
+
+
+def _inventory_jobs(stories, granted, *, partition_grants, episode_of, units, parts, allowed):
+    jobs = []
+    for s in stories:
+        if granted[s["key"]] == 0 or not allowed.get(s["key"]):
+            continue
         for key in s["episodes"]:
             e = episode_of[key]
-            day_units = units.of(e.moments)
+            day_units = [u for u in units.of(e.moments) if u["asset_id"] in allowed[s["key"]]]
             if parts.limit is not None:
                 day_units = [
                     u
@@ -305,7 +362,9 @@ def _check_partition_request(partition_limit, partition_of) -> None:
         )
 
 
-def _episodes_record(stories, story_units, choices_of, chosen_by_story) -> list[dict]:
+def _episodes_record(
+    stories, story_units, choices_of, groups_offered, chosen_by_story
+) -> list[dict]:
     return [
         {
             "episode": s["key"],
@@ -318,7 +377,9 @@ def _episodes_record(stories, story_units, choices_of, chosen_by_story) -> list[
             "seen": s["seen"],
             "day_episodes": s["episodes"],
             "units": len(story_units[s["key"]]),
+            # what the inventory read, beside the story's own size in capture groups
             "depicted_moments": len(choices_of[s["key"]]),
+            "groups_offered": groups_offered[s["key"]],
             "granted": len(chosen_by_story[s["key"]]),
             "chosen": chosen_by_story[s["key"]],
         }
@@ -365,7 +426,6 @@ def select_story_first(
     flagged: Callable[[str], bool] = lambda _asset: False,
     full_lines: Mapping[str, str] | None = None,
     life: Callable[[str], bool] = lambda _asset: True,
-    shareable: Callable[[dict], bool] | None = None,
     family_tier: Mapping[str, int] | None = None,
     period_label: str = "",
     standing_bank: dict | None = None,
@@ -375,8 +435,8 @@ def select_story_first(
     journey: bool = False,
     partition_of: Callable[[str], str | None] | None = None,
     partition_limit: int | None = None,
-    picture_line: Callable[[dict], str] | None = None,
     motion_line: Callable[[dict], str] | None = None,
+    episode_readings: Mapping[str, Any] | None = None,
     rules=None,
 ) -> StorySelection:
     """Read the period into weighed stories, fund them, inventory them, choose standing pictures.
@@ -387,7 +447,13 @@ def select_story_first(
     background); it is shown to the synthesis and weighs episodes the synthesis left unplaced.
     `record(name, payload)` persists a derived decision under the run's audit directory.
     """
-    calls = {"story_pages": 0, "inventory_pages": 0, "pick_calls": 0, "standing_rounds": 0}
+    calls = {
+        "story_pages": 0,
+        "story_pages_fresh": 0,
+        "inventory_pages": 0,
+        "pick_calls": 0,
+        "standing_rounds": 0,
+    }
     _check_partition_request(partition_limit, partition_of)
     unit_by_asset = {u["asset_id"]: (f, u) for f, units in event_units.items() for u in units}
     parts = PartitionedSlots(unit_by_asset, partition_of=partition_of, limit=partition_limit)
@@ -401,13 +467,16 @@ def select_story_first(
     def line_of(asset: str) -> str:
         return story_lines.get(asset, "")
 
-    # 1. The period story: day episodes from descriptions, then the synthesis sees each episode
-    #    with the numbers and the gate's reading and groups them into weighed stories.
-    evidence = story_evidence_rows(
-        factual_rows_fn(tables, aliases), sources=moment_assets, annotations={}, lines=lines
+    # 1. The period story: day episodes from the banked 90-minute episode readings, a month per
+    #    page, then the synthesis sees each episode with the numbers and the gate's reading and
+    #    groups them into weighed stories.
+    evidence = story_episode_rows(
+        factual_rows_fn(tables, aliases),
+        readings=episode_readings or {},
+        sources=moment_assets,
+        lines=lines,
+        favourite=lambda asset: bool(unit_by_asset.get(asset, (None, {}))[1].get("favourite")),
     )
-    for row in evidence:
-        row.pop("episode_context", None)  # the story must stand on descriptions alone
     read_story = rules.read_story if rules is not None else read_period_story
     story = read_story(
         judge,
@@ -422,6 +491,7 @@ def select_story_first(
         journey=journey,
     )
     calls["story_pages"] = len(story.audit.get("pages") or [])
+    calls["story_pages_fresh"] = (story.audit.get("reading_calls") or {}).get("fresh", 0)
 
     # 2. Stories: their units over every day they span, in weight order.
     stories, story_units = _weighed_stories(story, story.audit.get("hints") or {}, units)
@@ -429,11 +499,26 @@ def select_story_first(
     # 3. Cheap moments first (capture groups); the model inventory runs only where slots land.
     picking: dict[str, Any] = {"quality": quality, "flagged": flagged, "life": life}
     choices_of = _capture_group_choices(stories, story_units, **picking)
+    groups_offered = {s["key"]: len(choices_of[s["key"]]) for s in stories}
     slots = max(1, int(target_seconds // seconds_per_slot))
     granted, partition_grants = parts.allocate(stories, choices_of, slots)
 
-    # 4. The model inventory, per day episode inside a funded story.
+    # 4. The model inventory, per day episode inside a funded story, over the capture groups that
+    #    story can still spend a slot on.
+    kind_of = _kind_marker_of(unit_by_asset, story_lines)
     if rules is None:
+        allowed = _shortlisted_units(
+            stories,
+            granted,
+            partition_grants,
+            choices_of,
+            parts,
+            unit_by_asset,
+            starred=lambda c: choice_is_starred(c, unit_by_asset),
+            life=life,
+            kind_of=kind_of,
+        )
+        record("story-inventory-scope", _inventory_scope(stories, granted, choices_of, allowed))
         _inventory_funded_stories(
             _DayInventory(
                 judge,
@@ -451,11 +536,12 @@ def select_story_first(
             episode_of={e.key: e for e in story.episodes},
             units=units,
             parts=parts,
+            allowed=allowed,
             capture_groups=lambda day_units: _capture_group_moments(day_units, **picking),
         )
 
     # 5. Pick the moments that tell each story, then one picture per moment that stands by
-    #    itself and is shareable.
+    #    itself. The audience gate judges the cut afterwards, not every candidate.
     gate = StandingGate(
         judge,
         contract=contract,
@@ -481,10 +567,8 @@ def select_story_first(
         life=life,
         # documents, screenshots, face close-ups, care items: evidence, never carriers
         excluded=dict(excluded or {}),
-        shareable=shareable,
-        kind_marker=_kind_marker_of(unit_by_asset, story_lines),
+        kind_marker=kind_of,
         mechanical_picks=rules is not None,
-        picture_line=picture_line,
         motion_line=motion_line,
         contract=contract,
         record=record,
@@ -496,10 +580,13 @@ def select_story_first(
     selection = StorySelection(
         admission.carriers,
         story,
-        _episodes_record(stories, story_units, choices_of, admission.chosen_by_story),
+        _episodes_record(
+            stories, story_units, choices_of, groups_offered, admission.chosen_by_story
+        ),
         admission.alternatives_of,
         slots,
         calls,
+        story_lines,
     )
     record(
         "story-selection",
@@ -533,6 +620,7 @@ def trim_to_timing_budget(
     after every drop. Drop order: the least weighed story first, and inside a story its latest
     picture; a story's only picture goes only when no lighter story still has one. A protected
     carrier (one the owner required) is never a victim; when only those remain the trim stops.
+    A dropped carrier carries the reason it was cut, which the selection sheet prints.
     """
     from immich_memories.speech.cuts import minimum_duration
 
@@ -555,7 +643,13 @@ def trim_to_timing_budget(
             (c for rank, c in ranked if rank == best), key=lambda c: c.get("taken") or ""
         )  # latest first
         kept.remove(victim)
-        dropped.append(victim)
+        dropped.append(
+            victim
+            | {
+                "reason": f"Cut to fit the film's {budget:.1f} s of content",
+                "review_stage": "timing-trim",
+            }
+        )
     return kept, dropped
 
 
@@ -585,7 +679,9 @@ def alternatives_pool(
                 "anchor": carrier.get("anchor"),
                 "chapter": carrier.get("chapter"),
                 "why": carrier.get("why"),
-                "line": "",
+                # The page and the sheet print this under the thumbnail. A replacement
+                # describes itself; it never borrows the refused picture's description.
+                "line": selection.lines.get(a) or "Replaces a picture the audience gate refused",
             }
             for a in selection.alternatives_of.get(carrier["asset_id"], [])
             if a in unit_by_asset

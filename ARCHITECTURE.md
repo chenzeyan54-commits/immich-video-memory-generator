@@ -18,6 +18,28 @@ attempt is durable under `<cache>/editorial-runs/<key>/attempts/<id>/`
 it reads live in `<cache>/annotations.sqlite` (`store/`). The design is summarised in
 `docs/designs/2026-09-10-story-first-selection.md`.
 
+The period account (`analysis/editorial_story_reading.py`) reads the banked 90-minute episode
+readings, one page per calendar month, cut into parts only at a day boundary. No page carries
+anything from the page before it, so a month's prompt is a pure function of that month's rows: the
+months read in parallel through `reader_map`, the judgment bank answers a month it has already read,
+and one changed asset invalidates one month instead of every page after it. The one-day rule is
+applied to the answer (`_split_by_day`), not asked for in the prompt.
+
+Large period accounts page their episode evidence at 48,000 request characters. Story weighing
+also caps each page at 60 stories / 48,000 characters, repeats the whole-period thesis and central
+candidates, and keeps join-compatible stories together. Both orders of every page must validate
+before any weights, titles or joins change; central confirmation must hold across pages. Smaller
+story tables retain their existing two requests and cache keys.
+When the shared candidates crowd out a page, compare them first in both orders and repeat only
+the resulting central candidates. This preliminary comparison asks only for at most two
+distinct, offered central-story keys; it does not request weights or edits that would be
+discarded. Both orders use bounded answer recovery, and every story still receives its final
+weighting decision in both orders.
+If a large page still omits decisions after its repairs, or its text completion remains truncated
+after transport recovery, it is split between join-compatible groups
+and read again with the same central context. An indivisible group still fails visibly; partial
+weights and edits never carry into the recovered page.
+
 ## Two Trees
 
 `src/immich_memories/` is the app. `services/inference/immich_memories_inference/` is a second
@@ -214,7 +236,7 @@ src/immich_memories/
 │   ├── hardware_detection.py   # Hardware detection backends
 │   ├── hardware_encode.py      # VAAPI/QSV device init + hwupload for built commands
 │   ├── rate_control.py         # CRF -> per-encoder constant-quality flags
-│   └── live_photo_merger.py    # Live Photo merging
+│   └── live_photo_merger.py    # Live Photo merging with a common canvas for mixed source sizes
 │
 ├── audio/                      # Audio processing
 │   ├── mixer.py                # Audio mixing & ducking
@@ -419,6 +441,7 @@ src/immich_memories/
 │
 ├── operations/                 # Public lifecycle contract + read-only ops reports
 │   ├── auto_output.py           # Private complete child transcripts, addressed by automation attempt
+│   ├── call_families.py        # family_of()/calls_by_family(): model calls grouped by stage family
 │   ├── candidate_fates.py       # Saved pool outcomes + decision-log reader shared with runs why
 │   ├── caption_origins.py      # One picture's caption origin, and the run's distinct-origin line
 │   ├── phases.py               # OperationalPhase / PhaseEvent: stable outer lifecycle

@@ -18,6 +18,7 @@ from immich_memories.analysis.editorial_moment_wall import (
 )
 from immich_memories.analysis.editorial_people import adapt_editorial_people
 from immich_memories.analysis.editorial_structure_contract import (
+    EpisodeReadingCard,
     StructurePlannerPorts,
     StructurePlanningInput,
 )
@@ -28,6 +29,20 @@ from immich_memories.api.models import AssetType
 from immich_memories.config_loader import Config
 from immich_memories.timeperiod import DateRange
 from tests.conftest import make_asset
+
+
+def reading_cards(aliases, cards):
+    """What the banked 90-minute episode reading hands each moment of a captured wall."""
+    return {
+        alias: EpisodeReadingCard(
+            episode_id=card.episode_id,
+            evidence_key=f"evidence-{card.episode_id}",
+            what_happened=card.evidence.episode_meaning,
+            representative_asset_ids=card.representative_asset_ids,
+            cache_hit=False,
+        )
+        for alias, card in zip(aliases, cards, strict=True)
+    }
 
 
 def source(tmp_path, *, seconds, pictures=50, private_opening=False):
@@ -117,6 +132,7 @@ def source(tmp_path, *, seconds, pictures=50, private_opening=False):
         lineage={},
         bank_dir=tmp_path / "banks",
         artifact_dir=tmp_path / f"plan-{seconds}",
+        episode_readings=reading_cards(wall.aliases, (card,)),
     )
 
 
@@ -244,8 +260,24 @@ def run(source, judge):
 
 
 def semantic_plan(plan):
+    story = plan.get("story")
+    if isinstance(story, dict) and isinstance(story.get("calls"), dict):
+        # How many month pages were answered fresh is cache state, not a decision: a warm
+        # replay asks the same questions and reads the same answers out of the bank.
+        plan = {
+            **plan,
+            "story": {
+                **story,
+                "calls": {
+                    key: value
+                    for key, value in story["calls"].items()
+                    if key != "story_pages_fresh"
+                },
+            },
+        }
     telemetry = {
         "calls",
+        "calls_by_stage",
         "llm_metrics",
         "reranker_metrics",
         "reranker_calls",
@@ -293,9 +325,12 @@ def test_private_initial_choice_is_replaced_by_grounded_depth_without_claiming_i
     plan = run(captured, judge)
     assert plan["carriers"]
     assert all(c["asset_id"] != "picture-000" for c in plan["carriers"])
-    assert plan["shareability"]["preselection_rejected_members"] == 1
+    assert [row["asset_id"] for row in plan["shareability"]["tightened"]] == ["picture-000"]
+    stood_in = {row["to"] for row in plan["shareability"]["substituted"]}
+    assert stood_in and stood_in <= {c["asset_id"] for c in plan["carriers"]}
     # The story may know the occasion, but the shipped material never claims a
     # refused picture survived or borrows its description for another carrier.
+    # A picture that stood in for a refused one describes itself, like any other.
     assert all("moving step" in row["line"] for row in plan["carriers"])
     assert all(
         "bathtub" not in row["line"] and "bathing" not in row["line"] for row in plan["carriers"]

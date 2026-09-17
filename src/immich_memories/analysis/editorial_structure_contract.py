@@ -25,6 +25,19 @@ if TYPE_CHECKING:
     from immich_memories.analysis.editorial_rule_reader import RuleStructureReader
 
 
+class SampledPairConfirmer(Protocol):
+    """Confirm nominated source pairs against their own conserved pictures."""
+
+    def __call__(
+        self,
+        pairs: tuple[tuple[str, str], ...],
+        picture_records: Mapping[str, Mapping[str, Any]],
+        corroborating_distances: Sequence[int | None] | None = None,
+    ) -> tuple[Any, Mapping[str, Any]]:
+        """A hash-nominated pair carries its own distance; a described one carries none."""
+        ...
+
+
 class StructureJudge(Protocol):
     calls: list[dict[str, Any]]
 
@@ -110,6 +123,21 @@ def _check_contract(case: Case, intent: EditorialIntent) -> None:
 
 
 @dataclass(frozen=True)
+class EpisodeReadingCard:
+    """One canonical episode's banked meaning, carried on every moment it covers.
+
+    The wall row truncates the same meaning to 96 characters; this keeps the whole
+    reading and the representatives it named, so the story read never re-reads captions.
+    """
+
+    episode_id: str
+    evidence_key: str
+    what_happened: str
+    representative_asset_ids: tuple[str, ...]
+    cache_hit: bool
+
+
+@dataclass(frozen=True)
 class StructurePlanningInput:
     """All evidence is captured before planning; source IDs never enter model prompts."""
 
@@ -138,6 +166,9 @@ class StructurePlanningInput:
     # Canonical support is private context, separate from the prompt-serialized reading.
     # A cited source need not be selectable in the current request.
     period_evidence: tuple[InsightEvidence, ...] = ()
+    # The banked 90-minute episode reading behind each moment alias; the story read pages
+    # over these instead of over every caption of the period.
+    episode_readings: Mapping[str, EpisodeReadingCard] = field(default_factory=dict)
     # Attached evidence is separate from selectable primaries and canonical context.
     companion_assets: Mapping[str, Asset] = field(default_factory=dict)
     attached_outcome_replay: AttachedOutcomeReplay | None = None
@@ -179,14 +210,11 @@ class StructurePlannerPorts:
     picture_facts_metrics: Callable[[], Mapping[str, Any]] | None = None
     observe_story_motion: Callable[[Mapping[str, Any]], str] | None = None
     story_motion_metrics: Callable[[], Mapping[str, Any]] | None = None
-    confirm_sampled_pairs: (
-        Callable[
-            [tuple[tuple[str, str], ...], Mapping[str, Mapping[str, Any]]],
-            tuple[Any, Mapping[str, Any]],
-        ]
-        | None
-    ) = None
+    confirm_sampled_pairs: SampledPairConfirmer | None = None
     sampled_pair_metrics: Callable[[], Mapping[str, Any]] | None = None
+    # The same boundary asked whether two nearby captures repeat each other, which
+    # no perceptual distance answers; None leaves the strict question to answer both.
+    confirm_episode_pairs: SampledPairConfirmer | None = None
     sampled_preview_hashes: (
         Callable[[tuple[str, ...], Mapping[str, Mapping[str, Any]]], Mapping[str, str]] | None
     ) = None

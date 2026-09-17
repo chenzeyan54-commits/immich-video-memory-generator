@@ -109,7 +109,12 @@ Memory page shows beside its active phase row:
 ## The story reading and its weights
 
 `editorial_story_reading.py` and its split (`_grouping`, `_weighing`, `_replies`) produce a
-duration-independent account of the stories a memory's sources support. The grouping connects
+duration-independent account of the stories a memory's sources support. Its rows are the banked
+90-minute episode readings of stage 2, not the captions behind them, and one page is one calendar
+month, cut into parts only at a day boundary when a month is too large for one request. No page
+carries anything from the page before it, so a month's prompt is a pure function of that month's
+rows: the pages read in parallel, the judgment bank answers a month it has already read for free,
+and one changed asset invalidates one month instead of every page after it. The grouping connects
 day episodes into stories; the weighing then asks the model, over one compact table, to weigh
 each story **in its own words**: `dominant`, `major`, `minor`, `glimpse`, `none`
 (`editorial_story_replies.WEIGHTS`). The model can only name story keys — it cannot explode or
@@ -147,20 +152,25 @@ itself. The order is the owner's:
    weight becomes a number of pictures, capped by the moments the story actually holds; where a
    product limits how much one calendar partition may carry (a year's months), that capacity is
    reserved in the same order. Depth per weight class, never per day.
-2. **A funded story is inventoried over its whole span** (`editorial_moment_inventory.py`) — the
-   depicted-moment inventory is read only where a slot lands, which is where the reading budget
-   went from "too slow" to affordable.
+2. **A funded story is inventoried over the capture groups it can spend a slot on**
+   (`editorial_moment_inventory.py`) — the depicted-moment inventory is read only where a slot
+   lands, and inside a funded story only over the groups its own shortlist keeps (whole groups,
+   so a nearby competitor still has one); stars exempt nothing, because a shortlist that only
+   just covers its grant is exactly where the inventory finds a further moment inside a group the
+   story already holds. That is where the reading budget went from "too slow" to affordable.
 3. **The standing gate rejects before the pick** (`editorial_story_carriers.StandingGate`) —
    "does each picture stand by itself?", reject-only, two orders. A favourite lowers the bar; a
    texture slot raises it.
 4. **The pick** (`editorial_story_shortlist.py`, `editorial_story_pick_contract.py`) — the model
    chooses which moments tell the story from a shortlist that names each source truthfully
-   (video with its length, live photo, still); the favourite or the most-photographed moment
-   leads.
-5. **Carrier admission** — one picture per chosen moment is admitted if it is free, in context,
-   spaced from what is already committed and allowed for the audience. Freed slots are
-   re-granted across stories in up to three further passes, never to variants. An occasion whose
-   every candidate failed still shows once.
+   (video with its length, live photo, still), favourites leading its rows and marked there. It
+   is asked whatever the owner starred; only a story offering a single moment its grant reaches
+   has nothing to ask. The star wins the frame of the moment the pick chooses, never its story's
+   slot.
+5. **Carrier admission** — one picture per chosen moment is admitted if it is free, in context
+   and spaced from what is already committed. Freed slots are re-granted across stories in up to
+   three further passes, never to variants. An occasion whose every candidate failed still shows
+   once. The audience is not asked here: the gate reads the cut, not every candidate.
 6. **The audience chain and the final duplicate pass** close the cut — sampled-pair confirmation
    over conserved pixels, then duplicate discovery over the material that will actually be
    displayed (`editorial_final_sampled_duplicates.py`).

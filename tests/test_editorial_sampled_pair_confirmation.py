@@ -16,7 +16,10 @@ from immich_memories.analysis import editorial_gateway
 from immich_memories.analysis.editorial_picture_facts import PROMPT, PictureFactsProvider
 from immich_memories.analysis.editorial_sampled_pair_confirmation import CachedSampledPairConfirmer
 from immich_memories.analysis.llm_wire import LLMTransportAttempt
-from immich_memories.analysis.selection_same_picture import _PAIR_PROMPT
+from immich_memories.analysis.selection_same_picture import (
+    _PAIR_PROMPT,
+    SELECTS_MAX_CORROBORATION,
+)
 from immich_memories.analysis.selection_trace import Trace
 from immich_memories.analysis.visual_request_planner import VisionRequestLimits
 from immich_memories.api.models import AssetType
@@ -141,6 +144,46 @@ def test_real_provider_to_existing_pair_primitive_then_exact_warm(observed, monk
     warm, second = adapter((("one", "two"),), observed["records"])
     assert warm == first and second["cache_hits"] == 2 and second["actual_http_attempts"] == 0
     assert observed["records"] == before
+    adapter.close()
+
+
+def test_episode_similarity_is_separate_from_strict_matching_and_reused(observed, monkeypatch):
+    calls = replies(monkeypatch, [answer(False), answer(), answer()])
+    adapter = confirmer(observed)
+    strict, _ = adapter((("one", "two"),), observed["records"])
+    assert not strict[0].same
+    episode, audit = adapter.confirm_episode_pairs((("one", "two"),), observed["records"])
+    assert episode[0].same and audit["cache_hits"] == 0
+    assert calls[0]["prompt"] == _PAIR_PROMPT
+    assert calls[1]["prompt"] == calls[2]["prompt"] != _PAIR_PROMPT
+    assert calls[1]["images"] != calls[2]["images"]
+    warm, repeated = adapter.confirm_episode_pairs((("one", "two"),), observed["records"])
+    assert warm == episode and repeated["cache_hits"] == 2
+    assert repeated["actual_http_attempts"] == 0 and len(calls) == 3
+    adapter.close()
+
+
+def test_a_corroborating_distance_never_shortens_the_episode_question(observed, monkeypatch):
+    calls = replies(monkeypatch, [answer(), answer()])
+    adapter = confirmer(observed)
+    result, _ = adapter.confirm_episode_pairs(
+        (("one", "two"),), observed["records"], corroborating_distances=(0,)
+    )
+    assert result[0].same is True and len(calls) == 2
+    adapter.close()
+
+
+@pytest.mark.parametrize("distance,expected_calls", [(SELECTS_MAX_CORROBORATION, 1), (None, 2)])
+def test_a_corroborating_distance_replaces_the_second_arrangement(
+    observed, monkeypatch, distance, expected_calls
+):
+    calls = replies(monkeypatch, [answer()] * expected_calls)
+    adapter = confirmer(observed)
+    result, audit = adapter(
+        (("one", "two"),), observed["records"], corroborating_distances=(distance,)
+    )
+    assert result[0].same is True
+    assert len(calls) == audit["actual_http_attempts"] == expected_calls
     adapter.close()
 
 

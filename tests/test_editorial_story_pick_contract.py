@@ -66,6 +66,31 @@ def test_repeated_invalid_answer_fails_after_one_repair():
     assert len(judge.calls) == 2
 
 
+def test_overfull_pick_repair_sees_its_rejected_list_and_exact_excess():
+    offered = {f"M{i:02d}" for i in range(1, 77)}
+    rejected = json.dumps({"keep": sorted(offered)[:47], "unused_slots": 0})
+    corrected = sorted(offered)[1:47]
+    judge = Answers([rejected, json.dumps({"keep": corrected, "unused_slots": 0})])
+
+    result = ask_moment_pick(
+        judge,
+        "pick",
+        "Choose at most 46 from all 76 moments.",
+        labels=offered,
+        count=46,
+        allow_fewer=True,
+    )
+
+    assert result == corrected
+    assert len(result) == 46
+    assert judge.calls[0][1] == "Choose at most 46 from all 76 moments."
+    repair = judge.calls[1][1]
+    assert rejected in repair
+    assert "received 47 labels" in repair
+    assert "Remove at least 1" in repair
+    assert "complete replacement" in repair
+
+
 def test_both_pick_orders_use_label_free_format_and_validate_the_grant():
     judge = Answers([json.dumps({"keep": ["M03"]})] * 2)
     choices = [
@@ -90,7 +115,8 @@ def test_both_pick_orders_use_label_free_format_and_validate_the_grant():
 
 
 @pytest.mark.parametrize("favourite", [False, True])
-def test_conflicting_choices_keep_favourite_or_model_priority_before_filling_next_moment(favourite):
+def test_conflicting_choices_keep_model_priority_before_filling_the_next_moment(favourite):
+    """A star on a moment the pick did not name buys no slot, however the choices conflict."""
     choices = [
         DepictedChoice(str(i), "K01", f"2030-05-01T10:0{i}", "An outing", str(i)) for i in range(3)
     ]
@@ -109,47 +135,30 @@ def test_conflicting_choices_keep_favourite_or_model_priority_before_filling_nex
         record=lambda *_: None,
         compatible=compatible,
     )
-    assert [c.key for c in result] == ["0" if favourite else "1", "2"]
+    assert [c.key for c in result] == ["1", "2"]
 
 
-@pytest.mark.parametrize("favourites_fill", [False, True])
-def test_picture_comparison_is_once_per_contested_choice_and_skips_filled_favourites(
-    favourites_fill,
-):
+@pytest.mark.parametrize("starred", [False, True])
+def test_a_contested_shortlist_is_asked_from_its_inventory_star_or_not(starred):
     choices = [
-        DepictedChoice(str(i), "K01", f"2030-05-01T1{i}:00", "A ride", str(i)) for i in range(3)
+        DepictedChoice(str(i), "K01", f"2030-05-01T1{i}:00", f"A ride {i}", str(i))
+        for i in range(3)
     ]
-    observed = []
-
-    def picture(choice):
-        observed.append(choice.key)
-        return (
-            "Friends smiling in the setting"
-            if choice.key == "1"
-            else "Distant activity under dense overlays"
-        )
-
     judge = Answers(['{"keep":["M02"]}'] * 2)
     selected = pick_story_moments(
         judge,
         story={"key": "K01", "title": "An outing"},
         choices=choices,
         count=1,
-        starred=lambda c: favourites_fill and c.key == "2",
+        starred=lambda c: starred and c.key == "2",
         contract="The month",
         record=lambda *_: None,
-        picture_of=picture,
     )
-    if favourites_fill:
-        assert observed == [] and judge.calls == []
-        assert selected == [choices[2]]
-    else:
-        assert observed == ["0", "1", "2"]
-        assert selected == [choices[1]]
-        for _, prompt in judge.calls:
-            assert "Friends smiling in the setting" in prompt
-            assert "Distant activity under dense overlays" in prompt
-            assert "cached preview only" in prompt
+    assert selected == [choices[1]]
+    assert len(judge.calls) == 2
+    for _, prompt in judge.calls:
+        assert "A ride 1" in prompt  # the inventory content line carries the choice
+        assert "Proposed picture" not in prompt
 
 
 # The exact answer a hosted qwen3-30b gave on the June 2024 fixture (issue #908).

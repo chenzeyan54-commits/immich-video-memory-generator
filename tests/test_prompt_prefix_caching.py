@@ -138,11 +138,14 @@ def _inventory_prompts() -> tuple[str, str]:
 def _episode_page_prompts() -> tuple[str, str]:
     from immich_memories.analysis.editorial_story_reading import _episode_page_prompt
 
-    first = [{"reading": "r1", "facts": ["a walk"]}]
-    second = [{"reading": "r2", "facts": ["a lunch", "a swim"]}]
+    first = [{"reading": "r1", "what_happened": "a walk"}]
+    second = [
+        {"reading": "r1", "what_happened": "a lunch"},
+        {"reading": "r2", "what_happened": "a swim"},
+    ]
     return (
-        _episode_page_prompt(first, [{"id": "S0001"}], 2, CONTRACT),
-        _episode_page_prompt(second, [{"id": "S0001"}, {"id": "S0002"}], 3, CONTRACT),
+        _episode_page_prompt(first, "2024-02"),
+        _episode_page_prompt(second, "2024-03"),
     )
 
 
@@ -287,7 +290,9 @@ STAGES = [
     ("standing", _standing_prompts, 800),
     ("shareability-activity", _activity_prompts, 2800),
     ("shareability-exposure", _exposure_prompts, 1000),
-    ("moment-inventory", _inventory_prompts, 1500),
+    # 1400, not 1500: the inferred episode context left the preamble, so the head is
+    # ~90 bytes shorter and the same for every film asking the same day.
+    ("moment-inventory", _inventory_prompts, 1400),
     ("story-episodes", _episode_page_prompts, 900),
     ("story-grouping", _grouping_prompts, 1500),
     ("story-weighing", _weighing_prompts, 1500),
