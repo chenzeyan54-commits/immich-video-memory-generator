@@ -206,9 +206,19 @@ itself. The order is the owner's:
    so a nearby competitor still has one); stars exempt nothing, because a shortlist that only
    just covers its grant is exactly where the inventory finds a further moment inside a group the
    story already holds. That is where the reading budget went from "too slow" to affordable.
+   Because that shortlist is the whole funnel, motion competes inside it: a moment that plays is
+   sampled before an equivalent still, and when the cap fills anyway the shortlist reaches for as
+   many more playable moments as the story has slots, appended so no favourite is displaced and
+   the spread already chosen is untouched. Inside a group, the picture that plays takes the frame
+   unless a favourite claims it, because a video carries no sharpness measurement and lost every
+   other tie to a still (#1066).
 3. **The standing gate rejects before the pick** (`editorial_story_carriers.StandingGate`) —
    "does each picture stand by itself?", reject-only, two orders. A favourite lowers the bar; a
-   texture slot raises it.
+   texture slot raises it. A moving row says what it is (video with its source length, or a Live
+   Photo whose motion plays), whether anyone speaks in it, and what happens across it, from the
+   motion sentence preparation banked; the criterion says to judge that rather than whether one
+   frame would make a good photograph. Its bank key carries the caption seat that wrote those
+   sentences, the way a cull verdict carries the reading that produced it (#1064).
 4. **The pick** (`editorial_story_shortlist.py`, `editorial_story_pick_contract.py`; a valid
    shortfall whose sentence the reader forgot is asked once more and then taken as the choice it
    is, rather than ending the film) — the model
