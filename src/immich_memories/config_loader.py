@@ -181,6 +181,24 @@ def _drop_app_written_wildcard_host(data: dict, path: Path) -> None:
     )
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """`override` wins key by key, at every depth.
+
+    A hand-edited `editorial: {preparation: {tier: ...}}` used to replace the whole
+    app-written `advanced.editorial.preparation` block and take `detector_python` with
+    it, so the next run died in the detector interpreter (#765).
+    """
+    merged = base.copy()
+    for key, value in override.items():
+        current = merged.get(key)
+        merged[key] = (
+            _deep_merge(current, value)
+            if isinstance(current, dict) and isinstance(value, dict)
+            else value
+        )
+    return merged
+
+
 def _load_yaml_data(path: Path) -> dict:
     """Load and flatten YAML config data (advanced: → top-level)."""
     if not path.exists():
@@ -192,9 +210,9 @@ def _load_yaml_data(path: Path) -> dict:
         for section, nested in advanced.items():
             flat = data.get(section)
             if isinstance(flat, dict) and isinstance(nested, dict):
-                # Merge setting by setting: one hand-edited flat key must not
-                # silently discard the rest of the app-written block (#765).
-                data[section] = {**nested, **flat}
+                # Merge setting by setting, at every depth: one hand-edited flat key
+                # must not silently discard the rest of the app-written block (#765).
+                data[section] = _deep_merge(nested, flat)
             elif section not in data:
                 data[section] = nested
     _drop_app_written_wildcard_host(data, path)
@@ -354,6 +372,30 @@ class Config(BaseSettings):
     @model_validator(mode="after")
     def _apply_preset(self) -> Config:
         apply_preset(self)
+        return self
+
+    @model_validator(mode="after")
+    def _settle_preparation_tier(self) -> Config:
+        """Do not ask a blank install for captions nothing can produce.
+
+        The default tier is `full`, which demands a caption for every picture. A blank
+        `llm.model` already resolves the reader to `rules`, so with no reader and no
+        stated caption seat there is nothing to caption for, and the run spends every
+        batch on a connection refused at the default caption address. Stating the tier,
+        the caption endpoint or a model keeps the tier exactly as written.
+        """
+        preparation = self.editorial.preparation
+        stated = preparation.model_fields_set & {"tier", "caption_base_url", "caption_artifact_id"}
+        if preparation.tier != "full" or stated:
+            return self
+        if self.editorial.reader == "model" or self.llm.model.strip():
+            return self
+        preparation.tier = "no_captions"
+        logging.getLogger(__name__).info(
+            "No LLM model and no caption endpoint are configured, so preparation runs at "
+            "the no_captions tier (heads and detectors only). Set "
+            "advanced.editorial.preparation.tier to choose another."
+        )
         return self
 
     @classmethod
