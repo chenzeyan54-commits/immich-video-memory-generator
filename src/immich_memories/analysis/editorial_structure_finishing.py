@@ -9,13 +9,14 @@ that build one.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from immich_memories.analysis import editorial_shareability as _share
 from immich_memories.analysis.editorial_completion import RetainedMotion
 from immich_memories.analysis.editorial_final_attached import AttachedMaterialEvidence
+from immich_memories.analysis.editorial_final_hash_review import review_cut_by_cached_hashes
 from immich_memories.analysis.editorial_final_sampled_duplicates import (
     displayed_sample_members,
     reduce_final_sampled_duplicates,
@@ -133,7 +134,7 @@ def observe_attached(
     return attached, True
 
 
-def final_duplicate_review(
+def _sampled_duplicate_review(
     run: PlanRun,
     ports: StructurePlannerPorts,
     *,
@@ -141,16 +142,14 @@ def final_duplicate_review(
     episode_relation,
     picture_records,
     attached: AttachedMaterialEvidence,
-    prior,
-    prior_assets: set[str],
+    protected: Sequence[str],
     quality,
     pixel_facts,
-    owner_required: Sequence[str] = (),
-) -> None:
-    """Audit the completed film, including later contributions and the actual
-    resolved render kinds. Nothing may refill a removed duplicate afterward."""
+):
+    """The model review: nominate a pair from what its pictures were described as holding,
+    confirm it against their conserved pixels. None when this run has no ports to ask with."""
     if source_relation is None or ports.sampled_preview_hashes is None:
-        return
+        return None
     final_records = {**picture_records, **attached.records}
     carried = {carrier["asset_id"] for carrier in run.carriers}
     final_members = {
@@ -167,24 +166,106 @@ def final_duplicate_review(
             }
         )
     )
-    before_duplicates = run.carriers.copy()
-    run.carriers, run.final_duplicates = reduce_final_sampled_duplicates(
+    return reduce_final_sampled_duplicates(
         run.carriers,
         picture_records=final_records,
         preview_hashes=ports.sampled_preview_hashes(displayed_ids, final_records),
         confirm_relation=source_relation,
         confirm_episode_relation=episode_relation,
         bound_sample_members=final_members,
-        protected_asset_ids=sorted(
-            (prior_assets - set(prior.get("review_proposed_assets", [])) if prior else set())
-            | set(owner_required)
-        ),
+        protected_asset_ids=protected,
         objective_quality={
             c["asset_id"]: quality(c["asset_id"])
             for c in run.carriers
             if c["asset_id"] in pixel_facts
         },
     )
+
+
+def replacement_offers(pool_for: Callable[[Mapping[str, Any]], Sequence[Mapping[str, Any]]]):
+    """Label the audience gate's own pool by where each offer comes from.
+
+    The pool a held carrier draws on is already the moment's other pictures first, in the
+    order the quality key ranked them, and then the story's unshown moments. Naming the two
+    rungs is all the duplicate review needs to say which one refilled a slot.
+    """
+
+    def offers(carrier: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
+        moment = set(carrier.get("moment_alternatives") or ())
+        return [
+            ("moment" if unit.get("asset_id") in moment else "story", unit)
+            for unit in pool_for(carrier)
+        ]
+
+    return offers
+
+
+def _settle_replacements(run: PlanRun, ports: StructurePlannerPorts, added: Sequence[str]) -> None:
+    """A refilled slot arrives after motion was resolved and the budget settled.
+
+    Its picture is resolved like any other retained unit, and the film is fitted to the cap
+    it was already fitted to, so a replacement cannot buy the film length the trim refused.
+    """
+    if not added:
+        return
+    filled = set(added)
+    retained = RetainedMotion(ports.resolve_motion)
+    resolved = {
+        c["asset_id"]: c for c in retained([c for c in run.carriers if c["asset_id"] in filled])
+    }
+    run.carriers = [resolved.get(c["asset_id"], c) for c in run.carriers]
+    if run.final_content_cap > 0:
+        run.shaved += shave_content_duration(run.carriers, run.final_content_cap)
+
+
+def final_duplicate_review(
+    run: PlanRun,
+    ports: StructurePlannerPorts,
+    *,
+    source_relation,
+    episode_relation,
+    picture_records,
+    attached: AttachedMaterialEvidence,
+    prior,
+    prior_assets: set[str],
+    quality,
+    pixel_facts,
+    owner_required: Sequence[str] = (),
+    replacements_for: Callable[[Mapping[str, Any]], Sequence[tuple[str, Mapping[str, Any]]]]
+    | None = None,
+) -> None:
+    """Audit the completed film, including later contributions and the actual
+    resolved render kinds. Nothing may refill a removed duplicate afterward."""
+    protected = sorted(
+        (prior_assets - set(prior.get("review_proposed_assets", [])) if prior else set())
+        | set(owner_required)
+    )
+    before_duplicates = run.carriers.copy()
+    if ports.rules is not None:
+        # The sampled review needs a reader to confirm a nominated pair, so a no-model film
+        # ended with no review at all while a model film ended with one. The preview hashes
+        # the burst pass already cached ask the same question over the whole finished cut.
+        reviewed = review_cut_by_cached_hashes(
+            run.carriers,
+            thumbnail_hash=ports.thumbnail_hash,
+            protected_asset_ids=protected,
+            replacements_for=replacements_for,
+        )
+    else:
+        reviewed = _sampled_duplicate_review(
+            run,
+            ports,
+            source_relation=source_relation,
+            episode_relation=episode_relation,
+            picture_records=picture_records,
+            attached=attached,
+            protected=protected,
+            quality=quality,
+            pixel_facts=pixel_facts,
+        )
+    if reviewed is None:
+        return
+    run.carriers, run.final_duplicates = reviewed
     run.final_duplicates["status"] = (
         "incomplete" if run.final_duplicates["incomplete"] else "complete"
     )
@@ -198,6 +279,9 @@ def final_duplicate_review(
         }
         for carrier in before_duplicates
         if carrier["asset_id"] in removed
+    )
+    _settle_replacements(
+        run, ports, [row["replacement"] for row in removed.values() if "replacement" in row]
     )
 
 
