@@ -29,6 +29,8 @@ from immich_memories.analysis.editorial_story_lookalike import (
     picture_pair_relation,
 )
 from immich_memories.analysis.editorial_story_planner import alternatives_pool, select_story_first
+from immich_memories.analysis.editorial_story_replies import WEIGHT_ROLE
+from immich_memories.analysis.editorial_story_standing import StandingGate
 from immich_memories.analysis.editorial_story_trips import detect_film_trips
 from immich_memories.analysis.editorial_structure_audience import (
     AudienceGate,
@@ -71,6 +73,7 @@ from immich_memories.analysis.editorial_structure_record import (
     provider_metrics,
     shave_content_duration,
 )
+from immich_memories.analysis.editorial_thin_gates import ThinGates
 from immich_memories.analysis.subject_framing import framing_visibility
 from immich_memories.processing.editorial_timing import bind_editorial_timeline
 from immich_memories.security import write_secret_file
@@ -340,8 +343,12 @@ def _select(
         lines=source.annotations,
         bank_path=audit_dir / "shareability.private.json",
         check_audience=audience_check_for(
+            # A run that only polishes a rules draft still has the captions its tier produces;
+            # the reduced check belongs to a run with no model at all.
             "no_captions"
-            if ports.rules and source.config.editorial.preparation.demands_models
+            if ports.rules is not None
+            and ports.thin is None
+            and source.config.editorial.preparation.demands_models
             else source.config.editorial.preparation.tier
         ),
     )
@@ -378,6 +385,20 @@ def _select(
         looks_alike=_looks_alike_relation(ports, material, episode_relation, relation_records),
     )
     run.carriers = list(selection.carriers)
+    if ports.thin is not None:
+        run.carriers = _thin_polish(
+            source,
+            ports,
+            material,
+            wall,
+            selection,
+            pool,
+            gate,
+            run.carriers,
+            run,
+            contract=contract,
+            record=record_story,
+        )
     required = frozenset(source.owner_required_asset_ids)
     if required:
         # After the read, never before it: the owner's ticks change no prompt.
@@ -590,6 +611,114 @@ def _story_selection(
         looks_alike=looks_alike,
         film_span=(source.case.ranges[0].start.date(), source.case.ranges[-1].end.date()),
         near_home=_near_home_test(source, wall),
+    )
+
+
+def _thin_candidates(selection, wall: Wall, pool, unit_by_asset):
+    """Every picture of a story as a carrier the film could actually hold.
+
+    The catalogue says which pictures a story is about. A seat is filled with a carrier row, not
+    a bare unit, so everything downstream of the cut reads a refilled shot exactly as it reads
+    one the draft chose.
+    """
+    moments_of = {episode.key: tuple(episode.moments) for episode in selection.story.episodes}
+    story_of = {row["key"]: row for row in selection.story.stories}
+    chapter_of = {row["episode"]: number for number, row in enumerate(selection.episodes, 1)}
+
+    def candidates_of(story_key: str) -> list[dict]:
+        story = story_of.get(story_key)
+        if story is None:
+            return []
+        assets = [
+            asset
+            for episode in story.get("episodes") or ()
+            for moment in moments_of.get(episode, ())
+            for asset in pool.moment_assets.get(moment, ())
+        ]
+        return [
+            _thin_carrier(unit_by_asset[asset], story, selection, chapter_of, wall)
+            for asset in dict.fromkeys(assets)
+            if asset in unit_by_asset
+        ]
+
+    return candidates_of
+
+
+def _thin_carrier(entry, story, selection, chapter_of, wall: Wall) -> dict:
+    family, unit = entry
+    asset = unit["asset_id"]
+    line = selection.lines.get(asset, "")
+    return unit | {
+        "event": family,
+        "anchor": wall.anchor_label.get(family, family),
+        "chapter": chapter_of.get(story["key"], 1),
+        "why": f"{story['title']}: {line[:80]}",
+        "event_intention": story.get("purpose") or "",
+        "line": line,
+        "story_episode": story["key"],
+        "story_role": WEIGHT_ROLE[story["weight"]],
+        "story_weight": story["weight"],
+        "depicted_moment": f"source:{asset}",
+        "moment_alternatives": [],
+    }
+
+
+def _thin_polish(
+    source,
+    ports,
+    material: Material,
+    wall: Wall,
+    selection,
+    pool,
+    gate,
+    carriers,
+    run,
+    *,
+    contract,
+    record,
+):
+    """The model's one read of the rules cut this run built.
+
+    The draft was built blind: its standing answers came from rules and no bank was consulted,
+    so a gate refusal here leaves a slot rather than a silently shorter draft. This gate asks
+    the model the same question and banks its answers, which is what makes a second run free.
+    """
+    if ports.thin is None:
+        return carriers
+    unit_by_asset = {u["asset_id"]: (f, u) for f, units in material.units.items() for u in units}
+    unit_of = {asset: unit for asset, (_family, unit) in unit_by_asset.items()}
+    bank_path = source.bank_dir / "picture-stands.private.json"
+    bank = json.loads(bank_path.read_text()) if bank_path.exists() else {}
+    standing = StandingGate(
+        ports.judge,
+        contract=contract,
+        period_label=source.case.label,
+        line_of=lambda asset_id: selection.lines.get(asset_id, ""),
+        life=lambda asset_id: _shows_life(material, unit_of, asset_id),
+        unit_by_asset=unit_by_asset,
+        pictures_of={s["key"]: s["seen"]["pictures"] for s in selection.story.stories},
+        bank=bank,
+        save=lambda: write_secret_file(bank_path, json.dumps(bank, indent=1)),
+        calls=selection.calls,
+        motion_line=ports.observe_story_motion,
+        motion_identity=ports.story_motion_identity,
+    )
+    return ports.thin.polish(
+        carriers,
+        judge=ports.judge,
+        gates=ThinGates(
+            standing=standing,
+            audience=gate,
+            thumbnail_hash=ports.thumbnail_hash,
+            audience_name=source.audience,
+        ),
+        catalogue=ports.thin.catalogue_of(selection.story, pool.moment_assets),
+        contract=contract,
+        line_of=lambda asset_id: selection.lines.get(asset_id, ""),
+        record=record,
+        candidates_of=_thin_candidates(selection, wall, pool, unit_by_asset),
+        content_cap=run.final_content_cap,
+        protected=source.owner_required_asset_ids,
     )
 
 
