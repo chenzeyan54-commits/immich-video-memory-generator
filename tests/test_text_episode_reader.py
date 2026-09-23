@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -199,10 +200,8 @@ def test_a_cold_episode_is_read_once_then_reused_from_the_bank(tmp_path: Path) -
 def test_cold_episodes_are_packed_below_the_serialized_prompt_limit(
     tmp_path: Path,
 ) -> None:
-    from immich_memories.analysis.text_episode_reader import (
-        CachedTextEpisodeReader,
-        TextEpisodeRequestLimits,
-    )
+    from immich_memories.analysis.text_episode_paging import TextEpisodeRequestLimits
+    from immich_memories.analysis.text_episode_reader import CachedTextEpisodeReader
 
     noon = datetime(2026, 8, 25, 12, tzinfo=UTC)
     prepared = prepare_editorial_source(
@@ -260,7 +259,7 @@ def test_cold_episodes_are_packed_below_the_serialized_prompt_limit(
             producer=producer,
             annotations=lines,
             requester=requester,
-            limits=TextEpisodeRequestLimits(max_prompt_chars=1_645),
+            limits=TextEpisodeRequestLimits(max_prompt_chars=2_246),
         ).read(projections)
 
     assert len(prompts) > 1
@@ -270,7 +269,7 @@ def test_cold_episodes_are_packed_below_the_serialized_prompt_limit(
         (index, len(prompts)) for index in range(1, len(prompts) + 1)
     ]
     assert announced[0].stage_label == f"Reading event evidence: 1/{len(prompts)}"
-    assert all(len(prompt) <= 1_645 for prompt in prompts)
+    assert all(len(prompt) <= 2_246 for prompt in prompts)
     assert all(asset_id not in "".join(prompts) for asset_id in prepared.candidate_ids)
     assert all(episode.reading is not None for episode in first.episodes)
     assert first.actual_calls == len(prompts)
@@ -282,7 +281,7 @@ def test_cold_episodes_are_packed_below_the_serialized_prompt_limit(
         requester=lambda _prompt: (_ for _ in ()).throw(
             AssertionError("packed episode readings should be independently reusable")
         ),
-        limits=TextEpisodeRequestLimits(max_prompt_chars=1_645),
+        limits=TextEpisodeRequestLimits(max_prompt_chars=2_246),
     ).read(projections)
 
     assert warm.actual_calls == 0
@@ -292,10 +291,8 @@ def test_cold_episodes_are_packed_below_the_serialized_prompt_limit(
 def test_an_oversized_episode_is_paged_then_banked_as_one_full_reading(
     tmp_path: Path,
 ) -> None:
-    from immich_memories.analysis.text_episode_reader import (
-        CachedTextEpisodeReader,
-        TextEpisodeRequestLimits,
-    )
+    from immich_memories.analysis.text_episode_paging import TextEpisodeRequestLimits
+    from immich_memories.analysis.text_episode_reader import CachedTextEpisodeReader
 
     start = datetime(2026, 8, 25, 8, tzinfo=UTC)
     assets = tuple(
@@ -380,10 +377,8 @@ def test_an_oversized_episode_is_paged_then_banked_as_one_full_reading(
 
 
 def test_episode_pages_shrink_to_the_serialized_prompt_limit(tmp_path: Path) -> None:
-    from immich_memories.analysis.text_episode_reader import (
-        CachedTextEpisodeReader,
-        TextEpisodeRequestLimits,
-    )
+    from immich_memories.analysis.text_episode_paging import TextEpisodeRequestLimits
+    from immich_memories.analysis.text_episode_reader import CachedTextEpisodeReader
 
     start = datetime(2026, 8, 25, 8, tzinfo=UTC)
     assets = tuple(
@@ -434,13 +429,13 @@ def test_episode_pages_shrink_to_the_serialized_prompt_limit(tmp_path: Path) -> 
         annotations=lines,
         requester=requester,
         limits=TextEpisodeRequestLimits(
-            max_prompt_chars=1_645,
+            max_prompt_chars=2_246,
             max_assets_per_page=90,
         ),
     ).read(projections)
 
     assert len(prompts) > 1
-    assert all(len(prompt) <= 1_645 for prompt in prompts)
+    assert all(len(prompt) <= 2_246 for prompt in prompts)
     assert result.actual_calls == len(prompts)
     assert result.episodes[0].reading is not None
     assert result.episodes[0].reading.full_asset_ids == prepared.candidate_ids
@@ -449,10 +444,8 @@ def test_episode_pages_shrink_to_the_serialized_prompt_limit(tmp_path: Path) -> 
 def test_an_episode_omitted_from_a_pack_is_reasked_alone(
     tmp_path: Path,
 ) -> None:
-    from immich_memories.analysis.text_episode_reader import (
-        CachedTextEpisodeReader,
-        TextEpisodeRequestLimits,
-    )
+    from immich_memories.analysis.text_episode_paging import TextEpisodeRequestLimits
+    from immich_memories.analysis.text_episode_reader import CachedTextEpisodeReader
 
     start = datetime(2026, 8, 25, 8, tzinfo=UTC)
     prepared = prepare_editorial_source(
@@ -563,26 +556,35 @@ def test_an_invalid_episode_answer_retains_full_membership_and_is_not_banked(
     assert invalid.episodes[0].reading is None
     assert "invalid" in (invalid.episodes[0].unavailable_reason or "")
 
-    retried = CachedTextEpisodeReader(
-        store=store,
-        producer=producer,
-        annotations=lines,
-        requester=lambda _prompt: (
-            """{
-          "schema_version": "episode-reading-text-v1",
-          "episodes": [{
-            "episode": 1,
-            "what_happened": "A friend joins a family gathering.",
-            "representatives": [{"asset": 2, "reason": "Shows the friend arriving."}],
-            "cull": []
-          }]
-        }"""
-        ),
+    valid = """{
+      "schema_version": "episode-reading-text-v1",
+      "episodes": [{
+        "episode": 1,
+        "what_happened": "A friend joins a family gathering.",
+        "representatives": [{"asset": 2, "reason": "Shows the friend arriving."}],
+        "cull": []
+      }]
+    }"""
+
+    # The refusal is banked under this exact question, so the next run does not buy it again.
+    again = CachedTextEpisodeReader(
+        store=store, producer=producer, annotations=lines, requester=lambda _p: valid
     ).read(projections)
 
-    assert retried.actual_calls == 1
-    assert retried.episodes[0].reading is not None
-    assert retried.episodes[0].cache_hit is False
+    assert again.actual_calls == 0
+    assert again.episodes[0].reading is None
+    assert again.episodes[0].cache_hit is False
+
+    # A changed prompt is a changed question, so it is asked once more.
+    bumped = CachedTextEpisodeReader(
+        store=store,
+        producer=replace(producer, prompt_version="episode-prompt-v2"),
+        annotations=lines,
+        requester=lambda _p: valid,
+    ).read(projections)
+
+    assert bumped.actual_calls == 1
+    assert bumped.episodes[0].reading is not None
 
 
 def test_one_schema_envelope_remains_usable_when_followed_by_model_prose(
@@ -865,26 +867,24 @@ def test_a_provider_failure_retains_the_episode_and_leaves_the_bank_cold(
     assert failed.episodes[0].reading is None
     assert "provider timed out" in (failed.episodes[0].unavailable_reason or "")
 
-    retried = CachedTextEpisodeReader(
-        store=store,
-        producer=producer,
-        annotations=lines,
-        requester=lambda _prompt: (
-            """{
-          "schema_version": "episode-reading-text-v1",
-          "episodes": [{
-            "episode": 1,
-            "what_happened": "A friend joins a family gathering.",
-            "representatives": [{"asset": 2, "reason": "Shows the friend arriving."}],
-            "cull": []
-          }]
-        }"""
-        ),
+    valid = """{
+      "schema_version": "episode-reading-text-v1",
+      "episodes": [{
+        "episode": 1,
+        "what_happened": "A friend joins a family gathering.",
+        "representatives": [{"asset": 2, "reason": "Shows the friend arriving."}],
+        "cull": []
+      }]
+    }"""
+
+    # A provider that never answered has refused nothing, so the next run asks again.
+    again = CachedTextEpisodeReader(
+        store=store, producer=producer, annotations=lines, requester=lambda _p: valid
     ).read(projections)
 
-    assert retried.actual_calls == 1
-    assert retried.episodes[0].reading is not None
-    assert retried.episodes[0].cache_hit is False
+    assert again.actual_calls == 1
+    assert again.episodes[0].reading is not None
+    assert again.episodes[0].cache_hit is False
 
 
 def test_an_episode_with_incomplete_annotations_is_retained_without_being_sent(
@@ -1077,10 +1077,8 @@ def test_a_swallowed_provider_failure_names_the_rejecting_check_once_in_the_log(
 ) -> None:
     import logging as _logging
 
-    from immich_memories.analysis.text_episode_reader import (
-        CachedTextEpisodeReader,
-        TextEpisodeRequestLimits,
-    )
+    from immich_memories.analysis.text_episode_paging import TextEpisodeRequestLimits
+    from immich_memories.analysis.text_episode_reader import CachedTextEpisodeReader
 
     noon = datetime(2026, 8, 25, 12, tzinfo=UTC)
     later = noon + timedelta(days=3)
@@ -1113,7 +1111,7 @@ def test_a_swallowed_provider_failure_names_the_rejecting_check_once_in_the_log(
             requester=lambda _prompt: (_ for _ in ()).throw(
                 ValueError("LLM provider returned no choices: ['code', 'msg']")
             ),
-            limits=TextEpisodeRequestLimits(max_prompt_chars=1600),
+            limits=TextEpisodeRequestLimits(max_prompt_chars=2201),
         ).read(projections)
 
     assert all(episode.reading is None for episode in result.episodes)
@@ -1130,10 +1128,8 @@ def test_a_cold_episode_can_be_read_from_a_provider_batch(tmp_path: Path) -> Non
 
     from immich_memories.analysis.editorial_text_gateway import SyncTextPromptRequester
     from immich_memories.analysis.llm_batch import BatchCoordinator, BatchPolicy
-    from immich_memories.analysis.text_episode_reader import (
-        TEXT_EPISODE_MAX_OUTPUT_TOKENS,
-        CachedTextEpisodeReader,
-    )
+    from immich_memories.analysis.text_episode_paging import TEXT_EPISODE_MAX_OUTPUT_TOKENS
+    from immich_memories.analysis.text_episode_reader import CachedTextEpisodeReader
     from immich_memories.config_models_llm import LLMConfig
 
     noon = datetime(2026, 8, 25, 12, tzinfo=UTC)
@@ -1228,3 +1224,63 @@ def test_a_cold_episode_can_be_read_from_a_provider_batch(tmp_path: Path) -> Non
     assert len(queued) == 1
     assert result.episodes[0].reading is not None
     assert result.episodes[0].reading.what_happened == "A friend joins a family birthday party."
+
+
+def test_a_reading_names_the_moment_worth_a_record_and_it_survives_the_cull(
+    tmp_path: Path,
+) -> None:
+    """A picture the reading calls a record cannot also be thrown out as a Cull reject."""
+    from immich_memories.analysis.text_episode_reader import CachedTextEpisodeReader
+
+    noon = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    prepared = prepare_editorial_source(
+        EditorialSelectionRequest(scope=SourceScope()),
+        EditorialDependencies(
+            source_fetcher=lambda _scope: (
+                make_asset("the-room", file_created_at=noon),
+                make_asset("first-steps", file_created_at=noon + timedelta(minutes=5)),
+            )
+        ),
+    )
+    projections = project_episode_groups(prepared, prepared.candidate_ids)
+    lines = _AnnotationLines(
+        {
+            "the-room": "the-room | the living room",
+            "first-steps": "first-steps | a toddler walking unaided",
+        }
+    )
+    producer = EpisodeReadingProducer(
+        model_id="a-model",
+        prompt_version="episode-prompt-v3",
+        schema_version="episode-schema-v1",
+        annotation_renderer_version="annotation-line-v1",
+        annotation_versions=("description:student-v1",),
+    )
+
+    def answer(_prompt: str) -> str:
+        return json.dumps(
+            {
+                "schema_version": "episode-reading-text-v1",
+                "episodes": [
+                    {
+                        "episode": 1,
+                        "what_happened": "An afternoon in the living room.",
+                        "representatives": [{"asset": 1, "reason": "Shows the room."}],
+                        "notable_moments": [{"asset": 2, "reason": "walking unaided"}],
+                        "cull": [{"asset": 2, "bucket": "failed"}],
+                    }
+                ],
+            }
+        )
+
+    store = EpisodeReadingStore(tmp_path / "annotations.sqlite")
+    reading = (
+        CachedTextEpisodeReader(store=store, producer=producer, annotations=lines, requester=answer)
+        .read(projections)
+        .episodes[0]
+        .reading
+    )
+
+    assert reading is not None
+    assert reading.notable_moments == (EpisodeRepresentative("first-steps", "walking unaided"),)
+    assert reading.cull_decisions == ()

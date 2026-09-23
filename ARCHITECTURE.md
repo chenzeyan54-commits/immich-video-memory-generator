@@ -233,6 +233,13 @@ src/immich_memories/
 │   ├── editorial_thin_vote.py      # One closed thesis-fit vote over the whole cut, in balanced blocks
 │   ├── editorial_thin_pages.py     # What a seat is offered: motion first, records first, the refused moment first
 │   ├── editorial_thin_refill.py    # Which seats open, and the transaction that fills one
+│   ├── library_catalogue.py    # The account of a month/year, written over banked episode readings
+│   │                           # (plus the no-model facts of episodes a cut did not read), keyed by
+│   │                           # them plus the model that wrote them
+│   ├── catalogue_runtime.py    # Who writes one: `prepare --overviews` over a window, and a film run
+│   │                           # over a month or year the library has no account of yet
+│   ├── episode_demand.py      # The draft reads the period from facts; only the episodes its shots
+│   │                          # sit in are read by the model, when the polish layer asks for the account
 │   ├── editorial_home_radius.py    # Where home is, and whether captures sit inside its radius
 │   ├── editorial_shareability_tiers.py  # Audience evidence policy for reduced preparation tiers
 │   ├── editorial_review_list.py    # The finished cut's shots in the detector's 0.2-0.5 grey zone that
@@ -246,8 +253,10 @@ src/immich_memories/
 │   │                               # _detector_frames.py samples a video's eight frames for the
 │   │                               # exposure head, through the motion line's keyframe reader
 │   ├── selection_source*.py    # The canonical source model: admission, provenance, groups, invariants
-│   ├── text_episode_reader.py  # Reading event evidence (paged, banked)
+│   ├── text_episode_reader.py  # Reading event evidence (paged, banked); the same reading names
+│   │                           # each episode's notable moments, which the polish layer seats and protects
 │   ├── text_episode_prompt.py  # What that reading is asked, and what it may take a name from
+│   ├── text_episode_paging.py  # Its request limits: an episode cut into pages, pages packed into prompts
 │   ├── editorial_album_index.py # Album names by asset, one listing + one read per album, once per run
 │   ├── editorial_story_*.py    # Story reading, weighing, slots, shortlist, carriers: the story planner
 │   ├── editorial_story_trips.py     # Detected trips become one story each, with a reserve for their length
@@ -502,6 +511,7 @@ src/immich_memories/
 │   ├── motion_lines.py         # The motion line per video, keyed by picture, producer and source digest,
 │   │                           # with what produced it (question, keyframes, admitting residual)
 │   ├── library_overviews.py    # Read-only: the library's own account of a period, written by cataloguing
+│   ├── library_catalogue.py    # The only writer of that table: content-addressed period accounts
 │   ├── cut_measurements.py     # What a cut measures and banks: a Live Photo's motion residual and a
 │                               # clip's speech regions, keyed the same way (a missing row is
 │                               # "not measured", never "measured as nothing")

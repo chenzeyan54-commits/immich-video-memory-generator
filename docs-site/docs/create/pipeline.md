@@ -191,6 +191,14 @@ one picture. Nothing in the cut changes. It is a list for you, and it matters mo
 evidence lines it was written from, and an unsupported claim is dropped rather than printed. Trip
 titles are a different path, written from dates and place names, with no such check.
 
+**A record is what the summary would lose.** The same reading that says what an episode was also
+names the moments of it worth a record of their own, and why: a discovery, a milestone, a change,
+something that happened once. Most episodes have none, and nothing is inferred from the order
+things happened in. Those records are what the polish layer's first seat is for, and a picture
+carrying one keeps its place in the cut whatever the vote says, exactly like a picture you
+starred. The question is part of the episode prompt, so a library banked before it existed re-reads
+its episodes once, and never again.
+
 **An episode reading names nothing the facts do not name.** Words on a banner, a shirt, a sign, a
 screen or a poster name the thing they are printed on, never the day, the place or the event: a
 festival poster in the background of one picture does not make the weekend that festival. A name
@@ -502,10 +510,24 @@ the frame you starred wins. Every replacement goes through the same gates and is
 the company of the whole film; one the vote refuses is revoked, and the shot it would have replaced
 comes back.
 
-It needs a period the library holds an account of, which cataloguing writes. Without one the run
-plans the film with the story-first planner exactly as it always has, so a library is never left
-without a film. `advanced.editorial.thin_model_layer: false` makes the model plan the whole film
-even when an account exists.
+It needs a period the library holds an account of: what the month or year itself was about,
+read once and reused by every later cut of it. Nothing is read in advance. The draft is built from
+facts alone, with no model call at all. Then only the episodes the draft's shots sit in are read,
+so a film pays for what it shows: a month cut of 17 shots reads at most 17 episodes, not every
+episode of every story it touched. The account is written from those readings plus what the
+no-model reader already says about every other episode of the period, one request per month (and
+one more over the months, for a film of a whole year). `immich-memories prepare --year 2024 --month
+6 --overviews` reads the whole period ahead of time instead; its account sits over every episode,
+so a film prefers it to one a cut wrote. Either way each reading and each account is paid for
+once: both are keyed by exactly what they summarise and by the model that wrote them, so a second
+cut of the same draft asks nothing. The no-model reader writes no account at all, because there is
+no thesis without a reader.
+
+A span that is not a whole calendar month or year has no account: a film over a fortnight, a trip,
+a person. Those plan the film with the story-first planner exactly as they always have, so a
+library is never left without a film.
+`advanced.editorial.thin_model_layer: false` makes the model plan the whole film even when an
+account exists.
 
 ## The stages, and what each one costs
 
@@ -518,7 +540,7 @@ the episode readings used for the cut.
 | Stage | What runs | Where it can run |
 |---|---|---|
 | **Reading dates, places and people** | The source model, then preparation per producer: previews, pixel facts, the encoder with eight context heads, the two detectors, and on `full` one caption per picture and one motion sentence per video. Nothing banked is produced twice | previews over the network; captions remotable; heads, detectors and pixels on this box or the [inference service](../deploy/installation/inference-service.md) |
-| **Reading event evidence: i/n** | Paged episode reading over the annotation lines, the cull asked inside each episode, with an `Albums:` fact line naming the Immich albums that hold the episode. Banked per group and evidence key | the reader |
+| **Reading event evidence: i/n** | Paged episode reading over the annotation lines, the cull asked inside each episode, with an `Albums:` fact line naming the Immich albums that hold the episode. The same reading names the episode's notable moments: what a family would remember on its own and a 25-word summary would lose. Banked per group and evidence key | the reader |
 | **Building editorial cards** | One card per moment, rendered into the wall the planner reads | this box, cheap |
 | **Editing the memory** | The structure and story planners: monthly story reading, trip detection over the film's pictures, custom-subject or trip admission when needed, story weighing, the recurring-activity question, moment picks, standing gate, audience checks. Each a banked question, the gates asked in two orders. Prepared captions supply the candidates inside each funded story's shortlisted capture groups; there is no additional moment-inventory model pass. Standing is asked in two packed rounds and banked per picture, and picture facts are observed for the cut. The pick and the standing gate read each video's banked motion sentence. The cut also reuses Live motion residuals and speech boundaries for playback and timing; these timing observations do not reopen standing judgments | the reader; motion and speech locally |
 | **Validating selected source timing** | Intervals bound to their sources, duration realised | this box, cheap |

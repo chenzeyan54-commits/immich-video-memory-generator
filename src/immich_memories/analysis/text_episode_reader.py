@@ -27,6 +27,12 @@ from immich_memories.analysis.text_episode_answers import (
     _EpisodeRequestScope,
     _read_response_result,
 )
+from immich_memories.analysis.text_episode_paging import (
+    TextEpisodeRequestLimits,
+    episode_completion_budget,
+    episode_page_scopes,
+    pack_episode_scopes,
+)
 from immich_memories.analysis.text_episode_prompt import (
     AlbumNames,
     EpisodePromptFacts,
@@ -44,47 +50,14 @@ from immich_memories.store.episode_readings import (
 
 logger = logging.getLogger(__name__)
 
-TEXT_EPISODE_MAX_OUTPUT_TOKENS = 4_000
-_DEFAULT_MAX_PROMPT_CHARS = 24_000
-_DEFAULT_MIN_OUTPUT_TOKENS = 512
-_DEFAULT_OUTPUT_BASE_TOKENS = 200
-_DEFAULT_OUTPUT_TOKENS_PER_ROW = 128
-_DEFAULT_OUTPUT_TOKENS_PER_ASSET = 12
+_PROVIDER_FAILED = "text episode provider failed"
+_UNUSABLE = "text episode response was missing or invalid; full membership retained"
 
 
 class AnnotationLineReader(Protocol):
     """Build the one complete prompt line for every requested asset."""
 
     def lines_for(self, asset_ids: tuple[str, ...]) -> AnnotationLineBatch: ...
-
-
-@dataclass(frozen=True)
-class TextEpisodeRequestLimits:
-    """Bound one serialized episode request below the model's safe context."""
-
-    max_prompt_chars: int = _DEFAULT_MAX_PROMPT_CHARS
-    max_assets_per_page: int = 90
-    max_output_tokens: int = TEXT_EPISODE_MAX_OUTPUT_TOKENS
-    min_output_tokens: int = _DEFAULT_MIN_OUTPUT_TOKENS
-    output_base_tokens: int = _DEFAULT_OUTPUT_BASE_TOKENS
-    output_tokens_per_row: int = _DEFAULT_OUTPUT_TOKENS_PER_ROW
-    output_tokens_per_asset: int = _DEFAULT_OUTPUT_TOKENS_PER_ASSET
-    unread_retry_rounds: int = 2
-
-    def __post_init__(self) -> None:
-        if (
-            self.max_prompt_chars <= 0
-            or self.max_assets_per_page <= 0
-            or self.max_output_tokens <= 0
-            or self.min_output_tokens <= 0
-            or self.output_base_tokens <= 0
-            or self.output_tokens_per_row <= 0
-            or self.output_tokens_per_asset <= 0
-            or self.unread_retry_rounds < 0
-        ):
-            raise ValueError("episode request limits must be positive")
-        if self.min_output_tokens > self.max_output_tokens:
-            raise ValueError("episode minimum output budget cannot exceed its ceiling")
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,18 +70,27 @@ class EpisodeCacheRequestPlan:
     initial_page_count: int
     initial_pack_count: int
     oversized_page_count: int
+    # Asked before and refused: neither answered nor owed, and never asked again under this key.
+    refused_identities: tuple[EpisodeReadingIdentity, ...] = ()
 
     def __post_init__(self) -> None:
         requested = frozenset(self.requested_identities)
-        cache_hits = frozenset(self.cache_hit_identities)
-        missing = frozenset(self.missing_identities)
+        parts = (
+            frozenset(self.cache_hit_identities),
+            frozenset(self.missing_identities),
+            frozenset(self.refused_identities),
+        )
+        sizes = (
+            len(self.cache_hit_identities),
+            len(self.missing_identities),
+            len(self.refused_identities),
+        )
         if len(requested) != len(self.requested_identities):
             raise ValueError("episode request plan identities must be unique")
         if (
-            len(cache_hits) != len(self.cache_hit_identities)
-            or len(missing) != len(self.missing_identities)
-            or cache_hits & missing
-            or cache_hits | missing != requested
+            [len(part) for part in parts] != list(sizes)
+            or sum(sizes) != len(requested)
+            or frozenset.union(*parts) != requested
         ):
             raise ValueError("episode request plan must exactly partition cache hits and misses")
         if (
@@ -269,16 +251,21 @@ class CachedTextEpisodeReader:
         identities = tuple(identities_by_group.values())
         banked = self._store.readings_for(identities)
         cache_hits = frozenset(banked)
+        # An episode this exact question already failed to read is not asked again: the answer
+        # would be the same until the prompt, the evidence or the reader changes, and all three
+        # are in the key this refusal is filed under.
+        refused = self._store.refusals_for(identities)
+        unavailable_by_group.update(refused)
         missing = tuple(
             (identity, projection.group.candidate_ids)
             for projection in projections
             if (identity := identities_by_group.get(projection.group.group_id)) is not None
-            if identity.group_id not in banked
+            if identity.group_id not in banked and identity.group_id not in refused
         )
         request_scopes = tuple(
             page
             for identity, full_asset_ids in missing
-            for page in _page_scopes(
+            for page in episode_page_scopes(
                 identity,
                 full_asset_ids,
                 max_assets_per_page=self._limits.max_assets_per_page,
@@ -286,14 +273,19 @@ class CachedTextEpisodeReader:
                 max_prompt_chars=self._limits.max_prompt_chars,
             )
         )
-        packs, oversized = _pack_scopes(request_scopes, facts, limits=self._limits)
+        packs, oversized = pack_episode_scopes(request_scopes, facts, limits=self._limits)
         response_diagnostics: list[EpisodeResponseDiagnostic] = []
         request_plan = EpisodeCacheRequestPlan(
             requested_identities=identities,
             cache_hit_identities=tuple(
-                identity for identity in identities if identity.group_id in banked
+                identity
+                for identity in identities
+                if identity.group_id in banked and identity.group_id not in refused
             ),
             missing_identities=tuple(identity for identity, _membership in missing),
+            refused_identities=tuple(
+                identity for identity in identities if identity.group_id in refused
+            ),
             initial_page_count=len(request_scopes),
             initial_pack_count=len(packs),
             oversized_page_count=len(oversized),
@@ -312,6 +304,7 @@ class CachedTextEpisodeReader:
                 unavailable_by_group=unavailable_by_group,
                 diagnostics=response_diagnostics,
             )
+            self._bank_refusals(missing, banked, unavailable_by_group)
         episodes = _evidence(
             projections, identities_by_group, banked, cache_hits, unavailable_by_group
         )
@@ -433,7 +426,7 @@ class CachedTextEpisodeReader:
                 requester,
                 pack,
                 facts,
-                max_tokens=_completion_budget(pack, self._limits),
+                max_tokens=episode_completion_budget(pack, self._limits),
             )
         except Exception as exc:  # WHY: one failed pack cannot remove other episodes
             return exc
@@ -468,6 +461,31 @@ class CachedTextEpisodeReader:
         if self._strict_persistence_readback:
             self._verify_readback(completed)
         banked.update({reading.identity.group_id: reading for reading in completed})
+
+    def _bank_refusals(self, missing, banked, unavailable_by_group) -> None:
+        """File what this contract could not read, once its retries are spent.
+
+        A provider that never answered has refused nothing: the next run may reach it, so its
+        failure is not banked. Everything else is a verdict on this exact question -- a reply
+        that could not be used, or evidence that will not fit a request -- and asking it again
+        every run costs the same and answers the same.
+        """
+        refusals = [
+            (identity, reason)
+            for identity, _membership in missing
+            if identity.group_id not in banked
+            if not (reason := unavailable_by_group.get(identity.group_id, _UNUSABLE)).startswith(
+                _PROVIDER_FAILED
+            )
+        ]
+        if not refusals:
+            return
+        logger.warning(
+            "%d episode(s) could not be read and will not be asked again until the prompt, "
+            "the evidence or the reader changes",
+            len(refusals),
+        )
+        self._store.remember_refusals(refusals)
 
     def _verify_readback(self, completed: tuple[BankedEpisodeReading, ...]) -> None:
         recalled = self._store.readings_for(tuple(reading.identity for reading in completed))
@@ -518,10 +536,7 @@ def _evidence(
             unavailable_reason=(
                 None
                 if projection.group.group_id in banked
-                else unavailable_by_group.get(
-                    projection.group.group_id,
-                    "text episode response was missing or invalid; full membership retained",
-                )
+                else unavailable_by_group.get(projection.group.group_id, _UNUSABLE)
             ),
         )
         for projection in projections
@@ -567,7 +582,11 @@ def _offer_batch(requester, packs, facts, limits) -> None:
     offer = getattr(requester, "prefetch", None)
     if not callable(offer):
         return
-    offer(tuple((episode_prompt(pack, facts), _completion_budget(pack, limits)) for pack in packs))
+    offer(
+        tuple(
+            (episode_prompt(pack, facts), episode_completion_budget(pack, limits)) for pack in packs
+        )
+    )
 
 
 def _read_missing(
@@ -587,113 +606,8 @@ def _read_missing(
     return _read_response_result(raw, scopes)
 
 
-def _page_scopes(
-    identity: EpisodeReadingIdentity,
-    full_asset_ids: tuple[str, ...],
-    *,
-    max_assets_per_page: int,
-    facts: EpisodePromptFacts,
-    max_prompt_chars: int,
-) -> tuple[_EpisodeRequestScope, ...]:
-    whole = _EpisodeRequestScope(
-        identity=identity,
-        full_asset_ids=full_asset_ids,
-        page_asset_ids=full_asset_ids,
-        page_number=1,
-        page_count=1,
-    )
-    if (
-        len(full_asset_ids) <= max_assets_per_page
-        and len(episode_prompt((whole,), facts)) <= max_prompt_chars
-    ):
-        return (whole,)
-
-    pages: list[tuple[str, ...]] = []
-    current: tuple[str, ...] = ()
-    conservative_page_count = max(len(full_asset_ids), 2)
-    for asset_id in full_asset_ids:
-        proposed = (*current, asset_id)
-        scope = _EpisodeRequestScope(
-            identity=identity,
-            full_asset_ids=full_asset_ids,
-            page_asset_ids=proposed,
-            page_number=conservative_page_count,
-            page_count=conservative_page_count,
-        )
-        if current and (
-            len(proposed) > max_assets_per_page
-            or len(episode_prompt((scope,), facts)) > max_prompt_chars
-        ):
-            pages.append(current)
-            current = (asset_id,)
-        else:
-            current = proposed
-    if current:
-        pages.append(current)
-
-    return tuple(
-        _EpisodeRequestScope(
-            identity=identity,
-            full_asset_ids=full_asset_ids,
-            page_asset_ids=page_asset_ids,
-            page_number=page_number,
-            page_count=len(pages),
-        )
-        for page_number, page_asset_ids in enumerate(pages, start=1)
-    )
-
-
 def _scope_key(scope: _EpisodeRequestScope) -> tuple[str, int]:
     return scope.identity.group_id, scope.page_number
-
-
-def _pack_scopes(
-    scopes: tuple[_EpisodeRequestScope, ...],
-    facts: EpisodePromptFacts,
-    *,
-    limits: TextEpisodeRequestLimits,
-) -> tuple[tuple[tuple[_EpisodeRequestScope, ...], ...], tuple[_EpisodeRequestScope, ...]]:
-    packs: list[tuple[_EpisodeRequestScope, ...]] = []
-    oversized: list[_EpisodeRequestScope] = []
-    current: tuple[_EpisodeRequestScope, ...] = ()
-    for scope in scopes:
-        if (
-            len(episode_prompt((scope,), facts)) > limits.max_prompt_chars
-            or _completion_budget((scope,), limits) > limits.max_output_tokens
-        ):
-            oversized.append(scope)
-            continue
-        if scope.page_count > 1:
-            if current:
-                packs.append(current)
-                current = ()
-            packs.append((scope,))
-            continue
-        proposed = (*current, scope)
-        if current and (
-            len(episode_prompt(proposed, facts)) > limits.max_prompt_chars
-            or _completion_budget(proposed, limits) > limits.max_output_tokens
-        ):
-            packs.append(current)
-            current = (scope,)
-        else:
-            current = proposed
-    if current:
-        packs.append(current)
-    return tuple(packs), tuple(oversized)
-
-
-def _completion_budget(
-    scopes: tuple[_EpisodeRequestScope, ...],
-    limits: TextEpisodeRequestLimits,
-) -> int:
-    """Size generation from demanded response rows and possible Cull aliases."""
-    estimated = (
-        limits.output_base_tokens
-        + limits.output_tokens_per_row * len(scopes)
-        + limits.output_tokens_per_asset * sum(len(scope.page_asset_ids) for scope in scopes)
-    )
-    return max(limits.min_output_tokens, estimated)
 
 
 _Decided = TypeVar("_Decided", EpisodeRepresentative, EpisodeCullDecision)
@@ -722,12 +636,14 @@ def _complete_reading(identity, full_asset_ids, ordered) -> BankedEpisodeReading
     cull_decisions = _first_per_asset(
         decision for reading in ordered for decision in reading.cull_decisions
     )
+    notable_moments = _first_per_asset(
+        moment for reading in ordered for moment in reading.notable_moments
+    )
+    kept = {item.asset_id for item in (*representatives, *notable_moments)}
     if (
         what_happened is None
         or not representatives
-        or {item.asset_id for item in representatives}.intersection(
-            decision.asset_id for decision in cull_decisions
-        )
+        or kept.intersection(decision.asset_id for decision in cull_decisions)
     ):
         return None
     return BankedEpisodeReading(
@@ -736,6 +652,7 @@ def _complete_reading(identity, full_asset_ids, ordered) -> BankedEpisodeReading
         what_happened=what_happened,
         representatives=representatives,
         cull_decisions=cull_decisions,
+        notable_moments=notable_moments,
     )
 
 

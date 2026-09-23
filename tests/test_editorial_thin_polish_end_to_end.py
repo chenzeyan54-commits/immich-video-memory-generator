@@ -13,6 +13,7 @@ from immich_memories.analysis.editorial_thin_gates import ThinGates
 from immich_memories.analysis.editorial_thin_layer import ThinPolish
 from immich_memories.config_models_llm import LLMConfig
 
+ACCOUNT = "The month a family found its feet."
 JUNK = "an empty worktop"
 DOUBTED = "a plain corridor"
 UNSTEADY = "a blurred wall"
@@ -137,7 +138,7 @@ MOMENTS = {
 }
 
 
-def polish_once(tmp_path, judge):
+def polish_once(tmp_path, judge, standing_bank=None):
     unit_by_asset = {row["asset_id"]: ("fam", row) for rows in POOL.values() for row in rows}
     standing = StandingGate(
         judge,
@@ -145,16 +146,16 @@ def polish_once(tmp_path, judge):
         life=lambda _asset: True,
         unit_by_asset=unit_by_asset,
         pictures_of={"S1": 3, "S2": 3, "S3": 3},
-        bank={},
+        bank={} if standing_bank is None else standing_bank,
         save=None,
         calls={"standing_rounds": 0},
     )
-    layer = ThinPolish(account="The month a family found its feet.", bank_dir=tmp_path)
+    layer = ThinPolish(bank_dir=tmp_path, read_period=lambda _stories: (ACCOUNT, {}))
     return layer.polish(
         DRAFT,
         judge=judge,
         gates=ThinGates(standing=standing, audience=Audience(), thumbnail_hash=lambda _a: None),
-        catalogue=layer.catalogue_of(STORY, MOMENTS, {"n1": "the first of them"}),
+        catalogue=layer.catalogue_of(STORY, MOMENTS, {"n1": "the first of them"}, drafted=DRAFT),
         contract="contract",
         line_of=LINES.get,
         record=lambda _name, _payload: None,
@@ -200,3 +201,106 @@ def test_a_second_run_over_the_same_bank_asks_nothing_and_cuts_the_same_film(tmp
 
     assert [row["asset_id"] for row in warm] == [row["asset_id"] for row in cold]
     assert len(bank) == asked_cold
+
+
+def banked_records(tmp_path):
+    """The record the reading of S3's episode left behind, read back the way a run reads it."""
+    from contextlib import closing
+
+    from immich_memories.analysis.catalogue_runtime import banked_notable_records
+    from immich_memories.store.episode_readings import (
+        BankedEpisodeReading,
+        EpisodeReadingIdentity,
+        EpisodeReadingStore,
+        EpisodeRepresentative,
+    )
+
+    bank = tmp_path / "annotations.sqlite"
+    identity = EpisodeReadingIdentity(
+        group_id="e3", producer_key="producer-a", evidence_key="evidence-a"
+    )
+    with closing(EpisodeReadingStore(bank)) as store:
+        store.remember(
+            [
+                BankedEpisodeReading(
+                    identity=identity,
+                    full_asset_ids=("n1",),
+                    what_happened="A first.",
+                    representatives=(EpisodeRepresentative("n1", "the only frame"),),
+                    cull_decisions=(),
+                    notable_moments=(EpisodeRepresentative("n1", "the first of them"),),
+                )
+            ]
+        )
+    return banked_notable_records([identity], store_path=bank)
+
+
+def test_a_story_the_bank_records_something_about_is_seated_from_the_bank(tmp_path):
+    """No caller hands the records in: the layer reads them off the period's own readings."""
+    judge = PolishJudge()
+    unit_by_asset = {row["asset_id"]: ("fam", row) for rows in POOL.values() for row in rows}
+    standing = StandingGate(
+        judge,
+        line_of=LINES.get,
+        life=lambda _asset: True,
+        unit_by_asset=unit_by_asset,
+        pictures_of={"S1": 3, "S2": 3, "S3": 3},
+        bank={},
+        save=None,
+        calls={"standing_rounds": 0},
+    )
+    records = banked_records(tmp_path)
+    layer = ThinPolish(bank_dir=tmp_path, read_period=lambda _stories: (ACCOUNT, records))
+
+    cut = layer.polish(
+        DRAFT,
+        judge=judge,
+        gates=ThinGates(standing=standing, audience=Audience(), thumbnail_hash=lambda _a: None),
+        catalogue=layer.catalogue_of(STORY, MOMENTS, drafted=DRAFT),
+        contract="contract",
+        line_of=LINES.get,
+        record=lambda _name, _payload: None,
+        candidates_of=lambda key: POOL.get(key, []),
+        content_cap=52.5,
+    )
+
+    assert "n1" in [row["asset_id"] for row in cut]
+
+
+def test_every_vote_including_the_newcomers_re_check_is_banked_for_the_next_run(tmp_path):
+    """The re-check over a refilled cut is a paid answer like any other, so it is read back.
+
+    Both runs get their own judge with an empty bank of its own, so the only thing that can
+    keep the second one from voting again is the layer's own `thesis-fit.private.json`. The
+    picks that remain are the judgment cache's to answer, which production keeps in SQLite and
+    this fixture's judge stands in for.
+    """
+    standing = {}
+    cold = polish_once(tmp_path, PolishJudge(), standing_bank=standing)
+    second = PolishJudge()
+
+    warm = polish_once(tmp_path, second, standing_bank=standing)
+
+    assert [stage for stage in second.calls if stage.startswith("thesis-fit-")] == []
+    assert [row["asset_id"] for row in warm] == [row["asset_id"] for row in cold]
+
+
+def test_a_shot_is_never_voted_on_alone_when_the_bank_holds_its_neighbours(tmp_path):
+    """A reject-only vote names whatever it is shown when it has nothing to compare against."""
+    asked = []
+
+    class Watching(PolishJudge):
+        def ask(self, stage, prompt, max_tokens=260, **options):
+            if stage.startswith("thesis-fit-"):
+                asked.append(prompt.count("\nP"))
+            return super().ask(stage, prompt, max_tokens, **options)
+
+    standing = {}
+    polish_once(tmp_path, Watching(), standing_bank=standing)
+    first_round = list(asked)
+    asked.clear()
+
+    polish_once(tmp_path, Watching(), standing_bank=standing)
+
+    assert first_round and min(first_round) > 1
+    assert asked == []

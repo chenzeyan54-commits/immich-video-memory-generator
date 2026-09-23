@@ -54,24 +54,42 @@ def catalogued_period(ranges: Sequence[Any]) -> str:
 
 @dataclass(frozen=True)
 class ThinPolish:
-    """The model polish of a rules draft, for a period the library holds an account of."""
+    """The model polish of a rules draft, over an account of the period it is a cut of."""
 
-    account: str
     bank_dir: Path
+    # The account of the period, and what its readings named as worth a record, given the
+    # shots this draft chose, by story. Both arrive together, because both come from the same
+    # readings and neither is worth paying for before the draft exists.
+    read_period: Callable[[Mapping[str, Sequence[str]]], tuple[str, Mapping[str, str]]] = (
+        lambda _stories: ("", {})
+    )
 
     def catalogue_of(
         self,
         story,
         moment_assets: Mapping[str, Sequence[str]],
         records: Mapping[str, str] | None = None,
+        *,
+        drafted: Sequence[Mapping[str, Any]],
     ) -> BankedCatalogue | None:
-        """The catalogued period behind this run's own story reading, or None for no account."""
+        """The catalogued period behind this run's own story reading, or None for no account.
+
+        Every story of the period is listed, because the layer needs to know what the period
+        holds. Only the draft's own shots are READ, by the episode each one sits in: the
+        account is the thesis of THIS cut. A story is not the unit here, because one story can
+        hold most of a month: on one measured month the longest story spanned 10 episodes to
+        give the film 5 shots, and reading every story the draft touched read 44 of the
+        month's 50 episodes. The rest of the period is filled in later, by `prepare
+        --overviews` or by another cut.
+        """
+        asset_ids_of = _story_asset_ids(story.episodes, story.stories, moment_assets)
+        account, banked_records = self.read_period(_drafted_shots(asset_ids_of, drafted))
         return banked_catalogue(
-            account=self.account,
+            account=account,
             story_rows=story.stories,
             hints=story.audit.get("hints") or {},
-            asset_ids_of=_story_asset_ids(story.episodes, story.stories, moment_assets),
-            records=records,
+            asset_ids_of=asset_ids_of,
+            records=banked_records if records is None else records,
         )
 
     def polish(
@@ -159,15 +177,16 @@ class ThinPolish:
     ) -> tuple[list[dict[str, Any]], set[str]]:
         """Every newcomer, judged again in the company of the whole cut it would join.
 
-        The check is unbanked, so a newcomer is never the only row in its block and its verdict
-        is cast against the film it would actually be part of. A revoked newcomer does not take
-        the shot it replaced with it: that shot comes back and the film is where it started.
+        Banked by the block, never by the row: the answer to this exact cut, asked in both
+        orders, replays whole on a second run, and a newcomer is still never the only row left
+        to ask. A revoked newcomer does not take the shot it replaced with it: that shot comes
+        back and the film is where it started.
         """
         held = {row["asset_id"] for row in before}
         fresh = [row for row in filled if row["asset_id"] not in held]
         if not fresh:
             return filled, set()
-        votes, _rounds = self._ask(filled, judge, catalogue, contract, line_of, bank=None)
+        votes, _rounds = self._ask(filled, judge, catalogue, contract, line_of)
         verdicts = classify_fit(fresh, votes)
         revoked = {row["asset_id"] for row in fresh if verdicts[row["asset_id"]]["state"] == "bad"}
         if not revoked:
@@ -191,15 +210,21 @@ class ThinPolish:
         contract: str,
         line_of: Callable[[str], str],
     ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[dict]]:
-        bank_path = self.bank_dir / "thesis-fit.private.json"
-        bank = json.loads(bank_path.read_text()) if bank_path.exists() else {}
-        votes, rounds = self._ask(carriers, judge, catalogue, contract, line_of, bank=bank)
+        votes, rounds = self._ask(carriers, judge, catalogue, contract, line_of)
         verdicts = classify_fit(carriers, votes)
         kept = [c for c in carriers if verdicts[c["asset_id"]]["state"] != "bad"]
         return kept, verdicts, rounds
 
-    def _ask(self, carriers, judge, catalogue, contract, line_of, *, bank):
-        bank_path = self.bank_dir / "thesis-fit.private.json"
+    def _bank(self) -> dict:
+        """Both votes read and write one file, so neither is paid for twice."""
+        path = self._bank_path()
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def _bank_path(self) -> Path:
+        return self.bank_dir / "thesis-fit.private.json"
+
+    def _ask(self, carriers, judge, catalogue, contract, line_of):
+        bank = self._bank()
         story_of = {
             asset: story.key for story in catalogue.stories for asset in story.asset_ids
         }.get
@@ -211,10 +236,17 @@ class ThinPolish:
             contract=contract,
             story_of=lambda asset: story_of(asset, "") or "",
             bank=bank,
-            save=None
-            if bank is None
-            else (lambda: write_secret_file(bank_path, json.dumps(bank, indent=1))),
+            save=lambda: write_secret_file(self._bank_path(), json.dumps(bank, indent=1)),
         )
+
+
+def _drafted_shots(
+    asset_ids_of: Mapping[str, Sequence[str]], drafted: Sequence[Mapping[str, Any]]
+) -> dict[str, list[str]]:
+    """The draft's shots, by the story each one belongs to. No draft reads nothing."""
+    shots = {row["asset_id"] for row in drafted}
+    chosen = {key: [a for a in assets if a in shots] for key, assets in asset_ids_of.items()}
+    return {key: assets for key, assets in chosen.items() if assets}
 
 
 def _refusal_row(refusal: GateRefusal) -> dict[str, str]:

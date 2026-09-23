@@ -23,6 +23,18 @@ CREATE TABLE IF NOT EXISTS editorial_episode_readings (
     what_happened TEXT NOT NULL,
     representatives TEXT NOT NULL,
     cull_decisions TEXT NOT NULL,
+    notable_moments TEXT NOT NULL DEFAULT '[]',
+    answered_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (group_id, producer_key, evidence_key)
+)
+"""
+# Its own pool: one connection runs one CREATE, which is the contract upstream offers.
+_REFUSAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS editorial_episode_refusals (
+    group_id TEXT NOT NULL,
+    producer_key TEXT NOT NULL,
+    evidence_key TEXT NOT NULL,
+    reason TEXT NOT NULL,
     answered_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (group_id, producer_key, evidence_key)
 )
@@ -110,7 +122,10 @@ class EpisodeReadingIdentity:
 
 @dataclass(frozen=True)
 class EpisodeRepresentative:
-    """An episode member that carries one distinct part of its meaning."""
+    """An episode member that carries one distinct part of its meaning.
+
+    The same row shape carries a notable moment: which picture, and what it is a record of.
+    """
 
     asset_id: str
     reason: str
@@ -141,6 +156,9 @@ class BankedEpisodeReading:
     what_happened: str
     representatives: tuple[EpisodeRepresentative, ...]
     cull_decisions: tuple[EpisodeCullDecision, ...]
+    # What the reading says is worth a record of its own, and why. A reading that named
+    # none is an episode nothing stood out in, not an unread one.
+    notable_moments: tuple[EpisodeRepresentative, ...] = ()
 
     def __post_init__(self) -> None:
         members = set(self.full_asset_ids)
@@ -151,6 +169,7 @@ class BankedEpisodeReading:
         referenced = {
             *(representative.asset_id for representative in self.representatives),
             *(decision.asset_id for decision in self.cull_decisions),
+            *(moment.asset_id for moment in self.notable_moments),
         }
         if not referenced.issubset(members):
             raise ValueError("episode reading may reference only full episode members")
@@ -162,6 +181,7 @@ class EpisodeReadingStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
         self._connections = ThreadOwnedConnections(self.db_path, _SCHEMA)
+        self._refusals = ThreadOwnedConnections(self.db_path, _REFUSAL_SCHEMA)
 
     def remember(self, readings: Iterable[BankedEpisodeReading]) -> None:
         """Keep complete readings; an existing identity is never rerolled."""
@@ -170,11 +190,12 @@ class EpisodeReadingStore:
             return
         try:
             with self._connections.connection() as connection:
+                _migrate_notable_moments(connection)
                 connection.executemany(
                     "INSERT INTO editorial_episode_readings ("
                     "group_id, producer_key, evidence_key, full_asset_ids, what_happened, "
-                    "representatives, cull_decisions"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "representatives, cull_decisions, notable_moments"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(group_id, producer_key, evidence_key) DO NOTHING",
                     rows,
                 )
@@ -198,9 +219,11 @@ class EpisodeReadingStore:
         )
         try:
             with self._connections.connection() as connection:
+                _migrate_notable_moments(connection)
                 query = (
                     "SELECT group_id, producer_key, evidence_key, full_asset_ids, what_happened, "  # noqa: S608 -- generated placeholders; bound values.
-                    "representatives, cull_decisions FROM editorial_episode_readings "
+                    "representatives, cull_decisions, notable_moments "
+                    "FROM editorial_episode_readings "
                     f"WHERE (group_id, producer_key, evidence_key) IN ({placeholders})"
                 )
                 rows = connection.execute(query, parameters).fetchall()
@@ -217,9 +240,60 @@ class EpisodeReadingStore:
             recalled[reading.identity.group_id] = reading
         return recalled
 
+    def remember_refusals(self, refusals: Iterable[tuple[EpisodeReadingIdentity, str]]) -> None:
+        """Keep "this exact question could not be read" so it is asked once, not every run.
+
+        Only a refusal the same question would earn again belongs here: a reader that answered
+        and whose answer could not be used, or evidence too large to ask about. A provider that
+        was unreachable has refused nothing, and the caller keeps those out.
+        """
+        rows = [
+            (identity.group_id, identity.producer_key, identity.evidence_key, reason)
+            for identity, reason in refusals
+            if reason.strip()
+        ]
+        if not rows:
+            return
+        try:
+            with self._refusals.connection() as connection:
+                connection.executemany(
+                    "INSERT INTO editorial_episode_refusals ("
+                    "group_id, producer_key, evidence_key, reason"
+                    ") VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(group_id, producer_key, evidence_key) DO NOTHING",
+                    rows,
+                )
+                connection.commit()
+        except (OSError, sqlite3.Error) as exc:
+            logger.debug("Episode refusal store unwritable (%s): refusal not kept", exc)
+
+    def refusals_for(self, identities: Sequence[EpisodeReadingIdentity]) -> dict[str, str]:
+        """The episodes this exact contract already failed to read, and why."""
+        ordered = tuple(dict.fromkeys(identities))
+        if not ordered:
+            return {}
+        placeholders = ",".join("(?, ?, ?)" for _ in ordered)
+        parameters = tuple(
+            part
+            for identity in ordered
+            for part in (identity.group_id, identity.producer_key, identity.evidence_key)
+        )
+        try:
+            with self._refusals.connection() as connection:
+                rows = connection.execute(
+                    "SELECT group_id, reason FROM editorial_episode_refusals "  # noqa: S608 -- generated placeholders; bound values.
+                    f"WHERE (group_id, producer_key, evidence_key) IN ({placeholders})",
+                    parameters,
+                ).fetchall()
+        except (OSError, sqlite3.Error) as exc:
+            logger.debug("Episode refusal store unreadable (%s): treating as cold", exc)
+            return {}
+        return {str(group_id): str(reason) for group_id, reason in rows}
+
     def close(self) -> None:
         """Release every thread-owned connection."""
         self._connections.close()
+        self._refusals.close()
 
 
 def _row_for(reading: BankedEpisodeReading) -> tuple[str, ...]:
@@ -240,6 +314,13 @@ def _row_for(reading: BankedEpisodeReading) -> tuple[str, ...]:
             [
                 {"asset_id": decision.asset_id, "bucket": decision.bucket}
                 for decision in reading.cull_decisions
+            ],
+            separators=(",", ":"),
+        ),
+        json.dumps(
+            [
+                {"asset_id": moment.asset_id, "reason": moment.reason}
+                for moment in reading.notable_moments
             ],
             separators=(",", ":"),
         ),
@@ -265,4 +346,28 @@ def _reading_from(row: Sequence[object]) -> BankedEpisodeReading:
             EpisodeCullDecision(asset_id=str(item["asset_id"]), bucket=str(item["bucket"]))
             for item in cull_decisions
         ),
+        notable_moments=tuple(
+            EpisodeRepresentative(asset_id=str(item["asset_id"]), reason=str(item["reason"]))
+            for item in json.loads(str(row[7]))
+        ),
     )
+
+
+def _columns(connection: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in connection.execute("PRAGMA table_info(editorial_episode_readings)")}
+
+
+def _migrate_notable_moments(connection: sqlite3.Connection) -> None:
+    """A bank written before notable moments existed reads back with an explicitly empty lane."""
+    if "notable_moments" in _columns(connection):
+        return
+    try:
+        connection.execute(
+            "ALTER TABLE editorial_episode_readings "
+            "ADD COLUMN notable_moments TEXT NOT NULL DEFAULT '[]'"
+        )
+        connection.commit()
+    except sqlite3.OperationalError:
+        # Another thread's connection may have added it between the check and here.
+        if "notable_moments" not in _columns(connection):
+            raise

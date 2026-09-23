@@ -18,10 +18,8 @@ from immich_memories.analysis.selection_source import (
     prepare_editorial_source,
 )
 from immich_memories.analysis.selection_source_groups import project_episode_groups
-from immich_memories.analysis.text_episode_reader import (
-    CachedTextEpisodeReader,
-    TextEpisodeRequestLimits,
-)
+from immich_memories.analysis.text_episode_paging import TextEpisodeRequestLimits
+from immich_memories.analysis.text_episode_reader import CachedTextEpisodeReader
 from immich_memories.config_models_llm import LLMConfig
 from immich_memories.store.episode_readings import EpisodeReadingProducer, EpisodeReadingStore
 from tests.conftest import make_asset
@@ -62,7 +60,8 @@ def _reader(tmp_path, config):
             timeout_seconds=30,
             artifacts=TextPromptArtifacts(lambda: tmp_path, "episode"),
         ),
-        limits=TextEpisodeRequestLimits(max_prompt_chars=1645),
+        # One episode fits a request and two do not, so every page is its own call.
+        limits=TextEpisodeRequestLimits(max_prompt_chars=2246),
     )
     return reader, projections
 
