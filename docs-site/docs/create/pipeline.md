@@ -359,7 +359,7 @@ records, same storyboard. It costs nothing in API fees and runs on a 4-core NAS.
 | Who may see it? | Any flag from the detectors keeps a picture at family-only viewing, and the distilled `uncovered_person` head is a second opinion that can add one. A `no` from it lifts nothing: nothing clears a flag except you, on the pool page |
 | How long is a picture held? | A still the owner starred, or one with somebody Immich knows in it, keeps the nominal four seconds; an empty scene gives half a second back. Every hold stays inside the production 3.5 s to 5.0 s band. A clip keeps the length its own material gave it. The ends are not the rules reader's: on every tier the film's first and last shot are held half a second longer once the cut is settled, and the shave that follows can take it back when the target leaves no room |
 
-| Has anything already been answered about this picture? | On a library a model has read before, yes, and the draft reads it. A picture an earlier cut refused for this same audience is not offered; a picture a banked episode reading culled is not offered; a picture a model gave no standing to does not carry its moment while anything else in its group could; a picture a banked reading named for its episode leads that episode's order. Nothing is asked to find this out, and nothing is written |
+| Has anything already been answered about this picture? | On a library a model has read before, yes, and the draft reads it. A picture an earlier cut of any scope refused for this same audience is not offered, unless the refusal was a caption reading under an older audience prompt; a picture a banked episode reading culled is not offered; a picture a model gave no standing to does not carry its moment while anything else in its group could; a picture a banked reading named for its episode leads that episode's order. Nothing is asked to find this out, and nothing is written |
 
 Every answer stays inside the vocabulary the model path uses, so the planners downstream do not know
 which reader spoke.
@@ -557,7 +557,7 @@ timing trim included, and the selection sheet prints it.
 | Cache | Location | Holds |
 |---|---|---|
 | Annotation store | `~/.immich-memories/cache/annotations.sqlite` | every fact per picture and producer, the motion residuals and speech regions a cut measured included; the episode, cull and judgment banks |
-| Structure banks | `~/.immich-memories/cache/structure-banks/` | custom-subject and trip admission votes, standing votes, thumbnail hashes |
+| Structure banks | `~/.immich-memories/cache/structure-banks/` | custom-subject and trip admission votes, standing votes, audience verdicts, thumbnail hashes |
 | Attempts | `~/.immich-memories/cache/editorial-runs/` | one directory per cut |
 | Downloaded videos | `~/.immich-memories/cache/video-cache` | 10 GB, 7 days |
 | Immich previews | `~/.immich-memories/cache/thumbnails` | 10 GB |
@@ -584,3 +584,16 @@ piling them on the new ones. A picture the reading never looked at, because its 
 read, is remembered as neither. When a standing verdict removes a picture the current reading would
 have kept, the trace says so by name, and the newer answer replaces the old one for the next cut.
 A star still outranks anything in the bank, and [`runs why`](./cli/runs.md) prints the reason.
+
+Audience verdicts follow a picture across every cut of the library too, in
+`structure-banks/audience-verdicts.private.json`. A model's answer is kept under the reader that gave
+it and the exact evidence it read, prompt version included, so the next cut over the same pictures
+asks no audience question it already answered (15 questions to 0 on a repeated test cut), and a new
+reader or a new prompt asks again. A refusal is also kept per picture, and what happens to it
+depends on what cast it. One cast by the nsfw head, a direct body observation or a rule is
+permanent: not a new prompt, not a different reader, not a caption that changed lifts it. One cast
+by the model reading a caption (a bath, an identifying record) is stamped with the audience prompt
+version it was given under. Under that version no later read lifts it either; after a release
+changes the prompt, the picture is asked once more and the new answer replaces the old hold, clear
+or not. A hold that only says nothing looked at the picture is not kept, so adding a reader later
+still gets its say.
