@@ -13,8 +13,13 @@ PUBLIC_HEAD_VERSIONS = {
     "children": "public-v1",
     "location": "public-v1",
     "people": "public-v1",
-    "swim": "oi-v3",
     "venue": "oi-v3",
+    # Distilled from a typed picture reader's answers on the same public corpus. The two
+    # binary heads carry their operating band in their coefficients; `public-v1-strict`
+    # says so in the version string, because the band is what makes `screen` add-only.
+    "frame_kind": "public-v1",
+    "screen": "public-v1-strict",
+    "uncovered_person": "public-v1",
 }
 
 

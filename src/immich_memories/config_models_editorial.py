@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -11,6 +12,13 @@ from immich_memories.analysis.editorial_description_contract import DESCRIPTION_
 from immich_memories.config_models import expand_env_vars
 from immich_memories.config_models_editorial_preparation import EditorialPreparationConfig
 
+logger = logging.getLogger(__name__)
+
+# Heads that once shipped and no longer do. A config file that still names one is a
+# config written before the head was retired, not a broken config: the name is dropped
+# and the run continues, because nothing left in the tree reads it.
+RETIRED_HEADS = frozenset({"swim"})
+
 
 def _default_head_versions() -> dict[str, str]:
     """Return the producer set used by the public 2022 annotation store."""
@@ -18,10 +26,12 @@ def _default_head_versions() -> dict[str, str]:
         "activity": "public-v1",
         "children": "public-v1",
         "doc_docling": "det-v2",
+        "frame_kind": "public-v1",
         "location": "public-v1",
         "nsfw_marqo": "det-v2",
         "people": "public-v1",
-        "swim": "oi-v3",
+        "screen": "public-v1-strict",
+        "uncovered_person": "public-v1",
         "venue": "oi-v3",
     }
 
@@ -99,6 +109,10 @@ class EditorialConfig(BaseModel):
         for head in ("doc_docling", "nsfw_marqo"):
             if value.get(head) == "det-v1":
                 value = value | {head: "det-v2"}
+        retired = sorted(RETIRED_HEADS & set(value))
+        if retired:
+            logger.info("ignoring retired head versions: %s", ", ".join(retired))
+            value = {head: version for head, version in value.items() if head not in RETIRED_HEADS}
         return value
 
     @property

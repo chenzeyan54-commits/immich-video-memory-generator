@@ -24,9 +24,9 @@ the audience gate, which may only ever tighten.
 
 ```mermaid
 flowchart TB
-    full["full<br/>previews, pixel facts, the encoder and its six heads,<br/>the two detectors, one caption per picture that has none,<br/>one motion line per video that has none"]
+    full["full<br/>previews, pixel facts, the encoder and its eight heads,<br/>the two detectors, one caption per picture that has none,<br/>one motion line per video that has none"]
     full -->|"stop the captions: nothing is sent to the caption server"| nocap
-    nocap["no_captions<br/>previews, pixel facts, the encoder and its six heads, the two detectors"]
+    nocap["no_captions<br/>previews, pixel facts, the encoder and its eight heads, the two detectors"]
     nocap -->|"stop the ONNX models too: nothing looks at the picture"| meta
     meta["metadata_only<br/>previews and pixel measurements"]
 
@@ -49,7 +49,7 @@ pip install "immich-memories[editorial-cuda]" # instead of editorial, on a CUDA 
 `onnxruntime-gpu` already contains the CPU provider, the two distributions own the same import
 name, and whichever pip wrote last is the one that answers.
 
-The encoder, its six heads and both detectors are ONNX sessions on whatever provider ONNX Runtime
+The encoder, its eight heads and both detectors are ONNX sessions on whatever provider ONNX Runtime
 has, so `editorial-cuda` puts every seat on the card and plain `editorial` puts every seat on the
 CPU, inside the CUDA inference image as well.
 
@@ -87,7 +87,8 @@ only then renames it into `triage.encoder`. The export is
 `478164cd290ee78e5ddb4fcc474136eec714b4b8253a3609cc7164b592e958af`, checked at every run: no other
 ONNX conversion passes. The wheel carries the head bundle `public-6heads-v3.npz` (four base heads
 on `public-v1`, venue and swim on `oi-v3`): public training coefficients, no library photographs,
-no owner-trained heads.
+no owner-trained heads. Nothing reads `swim` any more: measured against a typed picture reader
+over 3,564 photographs it answered `yes` on 551 where the reader saw swimwear on 22.
 
 ## Detectors
 
