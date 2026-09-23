@@ -96,6 +96,16 @@ class EditorialConfig(BaseModel):
         ),
     )
 
+    thin_batched_audience: bool = Field(
+        default=False,
+        description=(
+            "Ask the thin layer's audience question of twelve carriers per request, in two row "
+            "orders, instead of one carrier per request. Every carrier gets its own answer, one "
+            "either order holds is held, and one the replies skip is asked alone. Off until a "
+            "probe on the local reader shows batching keeps every hold"
+        ),
+    )
+
     def resolve_reader(self, model: str) -> Literal["model", "rules"]:
         """A blank model selects the bounded rules reader unless explicitly required."""
         if self.reader == "rules" or self.reader == "auto" and not model.strip():

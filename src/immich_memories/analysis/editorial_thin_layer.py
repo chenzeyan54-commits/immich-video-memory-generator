@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import calendar
 import json
+import logging
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from operator import itemgetter
 from pathlib import Path
 from typing import Any
 
+from immich_memories.analysis.editorial_block_votes import BLOCK_SIZE, balanced_groups
 from immich_memories.analysis.editorial_thin_catalogue import (
     BankedCatalogue,
     ThinCatalogue,
@@ -27,8 +30,14 @@ from immich_memories.analysis.editorial_thin_catalogue import (
 )
 from immich_memories.analysis.editorial_thin_gates import GateRefusal, ThinGates
 from immich_memories.analysis.editorial_thin_refill import ThinRefill, ThinSlot, plan_slots
-from immich_memories.analysis.editorial_thin_vote import classify_fit, vote_thesis_fit
+from immich_memories.analysis.editorial_thin_vote import (
+    classify_fit,
+    is_protected,
+    vote_thesis_fit,
+)
 from immich_memories.security import write_secret_file
+
+logger = logging.getLogger(__name__)
 
 THIN_VERSION = "thin-polish-v1"
 
@@ -123,6 +132,8 @@ class ThinPolish:
             reason = "no catalogued account of this period" if catalogue is None else "no draft"
             record("thin-polish", {"version": THIN_VERSION, "ran": False, "reason": reason})
             return list(carriers)
+        carriers = _with_records(carriers, catalogue)
+        first_call = len(judge.calls)
         tier_of = {story.key: story.tier for story in catalogue.stories}
         admitted, refused = gates.admit(carriers, tier_of=tier_of, protected=protected)
         kept, verdicts, rounds = self._voted(admitted, judge, catalogue, contract, line_of)
@@ -131,7 +142,7 @@ class ThinPolish:
             catalogue=catalogue,
             verdicts=verdicts,
             refused=refused,
-            candidates_of=candidates_of,
+            candidates_of=lambda key: _with_records(candidates_of(key), catalogue),
             seen={c["asset_id"] for c in carriers},
             content_cap=content_cap,
         )
@@ -146,7 +157,10 @@ class ThinPolish:
             content_cap=content_cap,
         )
         filled, outcomes = refill.fill(kept, slots)
-        final, revoked = self._checked(filled, kept, outcomes, judge, catalogue, contract, line_of)
+        partition = balanced_groups([c["asset_id"] for c in admitted])
+        final, revoked = self._checked(
+            filled, kept, outcomes, partition, judge, catalogue, contract, line_of
+        )
         record(
             "thin-polish",
             {
@@ -169,6 +183,7 @@ class ThinPolish:
                 "shots": len(final),
                 "planned_seconds": round(sum(c["seconds"] for c in final), 3),
                 "content_cap": content_cap,
+                "calls": _spent(len(judge.calls) - first_call, len(carriers), len(outcomes)),
             },
         )
         return final
@@ -178,23 +193,34 @@ class ThinPolish:
         filled: list[dict[str, Any]],
         before: Sequence[Mapping[str, Any]],
         outcomes: Sequence[ThinSlot],
+        partition: Sequence[Sequence[str]],
         judge,
         catalogue: ThinCatalogue,
         contract: str,
         line_of: Callable[[str], str],
     ) -> tuple[list[dict[str, Any]], set[str]]:
-        """Every newcomer, judged again in the company of the whole cut it would join.
+        """Every newcomer, judged again in the company of the block it joined.
 
-        Banked by the block, never by the row: the answer to this exact cut, asked in both
-        orders, replays whole on a second run, and a newcomer is still never the only row left
-        to ask. A revoked newcomer does not take the shot it replaced with it: that shot comes
-        back and the film is where it started.
+        The first vote's blocks are kept: a swap takes its shot's place and an appended newcomer
+        joins the block its capture time falls in, so a few newcomers re-ask a few blocks and
+        not the whole cut. Only the newcomers' verdicts are read. Banked by the block, never by
+        the row, so a second run replays it, and a newcomer is never the only row left to ask.
+        A revoked newcomer does not take the shot it replaced with it: that shot comes back and
+        the film is where it started.
         """
         held = {row["asset_id"] for row in before}
         fresh = [row for row in filled if row["asset_id"] not in held]
         if not fresh:
             return filled, set()
-        votes, _rounds = self._ask(filled, judge, catalogue, contract, line_of)
+        newcomers = {row["asset_id"] for row in fresh}
+        by_asset = {row["asset_id"]: row for row in filled}
+        votes: dict[str, tuple[int, str]] = {}
+        for group in rejoined_blocks(partition, filled, newcomers, outcomes):
+            block = [by_asset[asset] for asset in group]
+            block_votes, _rounds = self._ask(
+                block, judge, catalogue, contract, line_of, moving=newcomers
+            )
+            votes.update(block_votes)
         verdicts = classify_fit(fresh, votes)
         revoked = {row["asset_id"] for row in fresh if verdicts[row["asset_id"]]["state"] == "bad"}
         if not revoked:
@@ -231,7 +257,8 @@ class ThinPolish:
     def _bank_path(self) -> Path:
         return self.bank_dir / "thesis-fit.private.json"
 
-    def _ask(self, carriers, judge, catalogue, contract, line_of):
+    def _ask(self, carriers, judge, catalogue, contract, line_of, moving=None):
+        """The vote over these shots; with `moving`, only those shots' answers are read."""
         bank = self._bank()
         story_of = {
             asset: story.key for story in catalogue.stories for asset in story.asset_ids
@@ -239,6 +266,11 @@ class ThinPolish:
         return vote_thesis_fit(
             judge,
             pictures=[c["asset_id"] for c in carriers],
+            protected=[
+                c["asset_id"]
+                for c in carriers
+                if is_protected(c) or (moving is not None and c["asset_id"] not in moving)
+            ],
             line_of=line_of,
             thesis=catalogue.thesis,
             contract=contract,
@@ -246,6 +278,79 @@ class ThinPolish:
             bank=bank,
             save=lambda: write_secret_file(self._bank_path(), json.dumps(bank, indent=1)),
         )
+
+
+def thin_budget(draft: int, seats: int) -> int:
+    """The calls a polish may spend: four questions per twelve draft shots (standing and fit
+    once, audience in its two orders: one look at the draft) and four per seat it opens.
+    Owner's budget, 09-23, with the audience's second order counted in."""
+    return 4 * math.ceil(draft / BLOCK_SIZE) + 4 * seats
+
+
+def _spent(asked: int, draft: int, seats: int) -> dict[str, int]:
+    budget = thin_budget(draft, seats)
+    if asked > budget:
+        logger.warning(
+            "The thin layer asked %d questions for %d shots and %d seats (budget %d)",
+            asked,
+            draft,
+            seats,
+            budget,
+        )
+    return {"asked": asked, "budget": budget}
+
+
+def rejoined_blocks(
+    partition: Sequence[Sequence[str]],
+    cut: Sequence[Mapping[str, Any]],
+    newcomers: set[str],
+    outcomes: Sequence[ThinSlot],
+) -> list[list[str]]:
+    """The first vote's blocks as the filled cut holds them, only the ones a newcomer joined.
+
+    A swap takes the place of the shot it replaced; an appended newcomer joins the first block
+    whose last shot was taken at or after it, or the last block. A block grown past twelve is
+    split evenly and only its parts holding a newcomer are returned.
+    """
+    taken = {row["asset_id"]: (str(row["taken"]), row["asset_id"]) for row in cut}
+    members = [[asset for asset in block if asset in taken] for block in partition] or [[]]
+    home = {asset: index for index, block in enumerate(partition) for asset in block}
+    home.update(
+        {slot.filled_by: home[slot.replacing] for slot in outcomes if slot.replacing in home}
+    )
+    ends = [taken[block[-1]] if block else None for block in members]
+    for asset in sorted(newcomers & set(taken), key=taken.__getitem__):
+        index = home.get(asset)
+        members[_time_block(ends, taken[asset]) if index is None else index].append(asset)
+    groups = (
+        group
+        for block in members
+        for group in balanced_groups(sorted(block, key=taken.__getitem__))
+    )
+    return [group for group in groups if newcomers & set(group)]
+
+
+def _time_block(ends: Sequence[tuple[str, str] | None], when: tuple[str, str]) -> int:
+    """The first block whose last shot was taken at or after `when`, or the last block."""
+    return next(
+        (index for index, end in enumerate(ends) if end is not None and end >= when),
+        len(ends) - 1,
+    )
+
+
+def _with_records(
+    rows: Sequence[Mapping[str, Any]], catalogue: ThinCatalogue
+) -> list[dict[str, Any]]:
+    """Each shot with what the catalogue records it as, which is what protects it from a vote.
+
+    The vote and the standing gate read `notable_record` off the shot itself, so a record the
+    catalogue holds but the shot does not carry protects nothing.
+    """
+    marked = []
+    for row in rows:
+        record = catalogue.notable_record_of(row["asset_id"])
+        marked.append(dict(row) | {"notable_record": record} if record else dict(row))
+    return marked
 
 
 def _drafted_shots(

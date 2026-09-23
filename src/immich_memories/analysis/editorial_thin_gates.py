@@ -27,7 +27,9 @@ WEIGHT_OF_TIER = {"remarkable": "major", "maybe": "minor", "background": "glimps
 class StandsAlone(Protocol):
     """The production standing gate, as this pass uses it."""
 
-    def ensure(self, assets: Sequence[str]) -> None: ...
+    def ensure(self, assets: Sequence[str], needs: Mapping[str, int] | None = None) -> None: ...
+
+    def needs(self, asset: str, weight: str, story_key: str = "") -> int: ...
 
     def stands(self, asset: str, weight: str, story_key: str = "") -> bool: ...
 
@@ -36,6 +38,8 @@ class ShowsToTheAudience(Protocol):
     """The production audience gate, as this pass uses it."""
 
     def verdict_of(self, unit: Mapping[str, Any]) -> str: ...
+
+    def prefetch(self, units: Sequence[Mapping[str, Any]], *, batch: int) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,8 @@ class ThinGates:
     audience: ShowsToTheAudience
     thumbnail_hash: Callable[[str], str | None]
     audience_name: str = "family"
+    # Carriers asked the audience question per request; below two, one at a time.
+    audience_batch: int = 0
 
     def admit(
         self,
@@ -67,7 +73,8 @@ class ThinGates:
     ) -> tuple[list[dict[str, Any]], list[GateRefusal]]:
         """The shots the gates keep, and the ones they refuse with the gate that refused them."""
         shots = sorted(carriers, key=itemgetter("taken", "asset_id"))
-        self.standing.ensure([c["asset_id"] for c in shots])
+        self.settle(shots, tier_of)
+        self.prefetch_audience([shot for shot in shots if self.stands_alone(shot, tier_of)])
         kept: list[dict[str, Any]] = []
         refused: list[GateRefusal] = []
         for shot in shots:
@@ -99,7 +106,7 @@ class ThinGates:
         The cut is protected, exactly as the draft pass protects what the film already holds, so
         a newcomer that repeats a shot already in the film is the one that leaves.
         """
-        self.standing.ensure([candidate["asset_id"]])
+        self.settle([candidate], tier_of)
         refusal = self._refusal(candidate, list(cut), tier_of)
         if refusal is not None:
             return refusal
@@ -116,12 +123,38 @@ class ThinGates:
         )
         return _repeat_refusal(candidate, keeper)
 
+    def settle(self, shots: Sequence[Mapping[str, Any]], tier_of: Mapping[str, str]) -> None:
+        """Put these shots to the standing gate together, asking only what can change an outcome.
+
+        A starred shot the catalogue records is not refused on standing at all, so nothing is
+        asked about it; the gate says what each other shot's standing turns on.
+        """
+        needs = {}
+        for shot in shots:
+            story = str(shot.get("story_episode") or "")
+            needs[shot["asset_id"]] = (
+                0
+                if _owner_and_record(shot)
+                else self.standing.needs(shot["asset_id"], _weight(story, tier_of), story)
+            )
+        self.standing.ensure(list(needs), needs)
+
+    def prefetch_audience(self, shots: Sequence[Mapping[str, Any]]) -> None:
+        """Put these shots to the audience gate together, when it is asked in batches."""
+        if self.audience_batch > 1 and shots:
+            self.audience.prefetch(shots, batch=self.audience_batch)
+
+    def stands_alone(self, shot: Mapping[str, Any], tier_of: Mapping[str, str]) -> bool:
+        """The standing gate's answer for this shot as its story's weight reads it."""
+        story = str(shot.get("story_episode") or "")
+        stands = self.standing.stands(shot["asset_id"], _weight(story, tier_of), story)
+        return stands or _owner_and_record(shot)
+
     def _refusal(self, shot, kept, tier_of) -> GateRefusal | None:
         story = str(shot.get("story_episode") or "")
         moment = str(shot.get("moment") or "")
-        weight = WEIGHT_OF_TIER.get(tier_of.get(story, "background"), "glimpse")
-        stands = self.standing.stands(shot["asset_id"], weight, story)
-        if not stands and not _owner_and_record(shot):
+        if not self.stands_alone(shot, tier_of):
+            weight = _weight(story, tier_of)
             return GateRefusal(
                 shot["asset_id"], story, "standing", f"as a {weight} story's shot", moment
             )
@@ -133,6 +166,10 @@ class ThinGates:
                 shot["asset_id"], story, "capture spacing", "inside five minutes", moment
             )
         return None
+
+
+def _weight(story: str, tier_of: Mapping[str, str]) -> str:
+    return WEIGHT_OF_TIER.get(tier_of.get(story, "background"), "glimpse")
 
 
 def _repeat_refusal(shot: Mapping[str, Any], keeper: str) -> GateRefusal:
