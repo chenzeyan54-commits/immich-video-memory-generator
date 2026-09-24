@@ -16,9 +16,8 @@
 # Which mode this file starts in: no LLM model is set below, so the app cuts with
 # its rules reader, and that one needs nothing outside this container. It gives
 # you the ten standard memory types, cut from dates, places, favourites and known
-# people. It is the degraded mode: it can skip an occasion or spend a slot on a
-# mundane object, so look before you share, and custom free-text subjects are
-# refused outright.
+# people. This is the NAS path — the rules reader is the film, it finishes with
+# no second service, and it is the default.
 #
 # The preparation tier below is pinned to no_captions, so this container is the
 # whole stack: run `models fetch` inside it once (about 500 MB of pinned ONNX)
@@ -26,9 +25,10 @@
 # under every picture, which wants a caption server, or drop it to metadata_only,
 # which fetches nothing at all.
 #
-# For the model editor, which reads the period as a story and puts a reason under
-# every picture, point LLM__BASE_URL and LLM__MODEL at a vision model you host:
-# about 17 GB resident at 4-bit, on a second machine. See the self-hosting guide:
+# For a vision model to polish the draft — it reads the period as a story and
+# puts a reason under every picture — point LLM__BASE_URL and LLM__MODEL at a
+# model you host: about 17 GB resident at 4-bit, on a second machine. See the
+# self-hosting guide:
 # https://sam-dumont.github.io/immich-video-memory-generator/docs/deploy/self-hosting
 services:
   immich-memories:
@@ -47,8 +47,9 @@ services:
       IMMICH_API_KEY: "${IMMICH_API_KEY}"
       # Optional: session secret (auto-generated if not set; set to preserve sessions on restart)
       # IMMICH_MEMORIES_STORAGE_SECRET: "${IMMICH_MEMORIES_STORAGE_SECRET}"
-      # The model editor's vision reader. Left unset, as it ships, the rules
-      # reader cuts instead. Set both keys to switch.
+      # Optional polish: a vision model reads the period as a story and puts a
+      # reason under every picture. Left unset, the rules reader cuts as above.
+      # Set both keys to add it.
       # "localhost" here means this container, so use a real hostname.
       # IMMICH_MEMORIES_LLM__BASE_URL: "http://your-model-box:8000/v1"
       # IMMICH_MEMORIES_LLM__MODEL: "mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit"
