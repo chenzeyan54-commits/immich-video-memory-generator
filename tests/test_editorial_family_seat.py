@@ -145,7 +145,7 @@ def test_a_friend_is_not_close_family():
     assert record["seats"] == []
 
 
-def _planned_month(tmp_path, *, seat: bool, seconds: float = 60):
+def _planned_month(tmp_path, *, seat: bool, seconds: float = 60, scene_print=None):
     """A rules-read month shaped like the one that left a partner out. In her week every moment's
     starred frame shows the child alone and the partner is on its other five pictures, so each
     moment she is in goes to a favourite; each day also has a moment of the child alone. The
@@ -183,6 +183,7 @@ def _planned_month(tmp_path, *, seat: bool, seconds: float = 60):
             judge=NoModelJudge(),
             thumbnail_hash=lambda _asset: None,
             rules=RuleStructureReader(source),
+            scene_print=scene_print,
         ),
     ).plan
     shots = [c["asset_id"] for c in plan["carriers"]]
@@ -198,6 +199,59 @@ def test_the_rules_draft_gives_a_partner_left_out_by_the_favourites_exactly_one_
     assert partner_today == []
     assert len(partner) == 1
     assert starred == starred_today
+
+
+def test_the_duplicate_review_never_takes_a_seated_partner_out_of_the_film(tmp_path):
+    """Every frame of the month reads as one scene, so the final review sees each non-favourite
+    as a repeat of a favourite: the partner's only shot must survive it."""
+    import numpy as np
+
+    _shots, _starred, partner = _planned_month(
+        tmp_path, seat=True, scene_print=lambda _asset: np.array([1.0, 0.0])
+    )
+
+    assert len(partner) == 1
+
+
+def test_a_partner_who_lost_her_only_shot_after_the_draft_is_seated_again():
+    """Whatever took her shot after the seat ran (a review, the audience gate, the trim), the
+    finished film is checked again and the frame that gives up its place is on the cut record."""
+    from types import SimpleNamespace
+
+    from immich_memories.analysis.editorial_structure_finishing import (
+        PlanRun,
+        seat_again_after_review,
+    )
+
+    lines, rows, film = _month()
+    run = PlanRun(carriers=list(film))
+
+    seat_again_after_review(
+        run,
+        SimpleNamespace(resolve_motion=None),
+        seat=lambda cut: seat_close_family(cut, _inputs(lines, rows))[0],
+    )
+
+    assert _shows_partner(lines, run.carriers) == ["p-12"]
+    assert [(c["asset_id"], c["review_stage"]) for c in run.cut_carriers] == [
+        ("plain-s2", "family-seat")
+    ]
+    assert run.carriers == sorted(run.carriers, key=lambda c: str(c.get("taken", "")))
+
+
+def test_a_frame_the_audience_gate_holds_gives_the_seat_to_her_next_best():
+    lines, rows, film = _month()
+    asked = []
+
+    def held(asset):
+        asked.append(asset)
+        return asset == "p-12"
+
+    inputs = FamilySeatInputs(**{**_inputs(lines, rows).__dict__, "held": held})
+    seated, _ = seat_close_family(film, inputs)
+
+    assert _shows_partner(lines, seated) == ["p-00"]
+    assert asked == ["p-12", "p-00"]
 
 
 def test_a_full_film_whose_stories_of_her_hold_no_shot_seats_her_in_place_of_its_weakest():
@@ -254,7 +308,7 @@ people:
 """
 
 
-def _planned_person_film(tmp_path, *, product: str):
+def _planned_person_film(tmp_path, *, product: str, scene_print=None, full=False):
     """A rules-read period of the owner's partner. Every moment's starred frame shows her alone,
     and her father and mother are on the other pictures of her first week, so every moment they
     are in goes to a favourite. The people file links her parents to her, not to the owner."""
@@ -304,14 +358,37 @@ def _planned_person_film(tmp_path, *, product: str):
             judge=NoModelJudge(),
             thumbnail_hash=lambda _asset: None,
             rules=RuleStructureReader(source),
+            scene_print=scene_print,
         ),
     ).plan
     shots = [c["asset_id"] for c in plan["carriers"]]
-    return [a for a in shots if "Her Father" in source.annotations[a]]
+    fathers = [a for a in shots if "Her Father" in source.annotations[a]]
+    return (fathers, plan, source) if full else fathers
 
 
 def test_a_person_film_seats_its_subjects_parents_though_the_owner_calls_them_in_laws(tmp_path):
     assert len(_planned_person_film(tmp_path / "person", product="person_spotlight")) == 1
+
+
+def test_the_review_keeps_the_subjects_parents_only_shot_beside_its_look_alike(tmp_path):
+    """Every frame of the month reads as one scene, so the parents' seated shot is a look-alike of
+    a favourite. The owner calls them in-laws, so only the film's own close family protects it:
+    the review keeps it, and the second seat has nobody left to seat."""
+    import json
+
+    import numpy as np
+
+    fathers, plan, source = _planned_person_film(
+        tmp_path,
+        product="person_spotlight",
+        scene_print=lambda _asset: np.array([1.0, 0.0]),
+        full=True,
+    )
+
+    assert len(fathers) == 1
+    assert plan["final_duplicate_review"]["kept_only_shots"] == fathers
+    after = source.artifact_dir / "derived-decisions" / "family-seat-after-review.private.json"
+    assert json.loads(after.read_text())["seats"] == []
 
 
 def test_a_month_film_keeps_close_family_relative_to_the_owner(tmp_path):

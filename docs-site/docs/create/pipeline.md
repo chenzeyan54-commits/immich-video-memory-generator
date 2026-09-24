@@ -539,11 +539,24 @@ seat replaces the film's weakest non-favourite in a story that keeps another sho
 of a model on any tier. The two numbers are `advanced.editorial.people.seat_min_pictures` and
 `seat_min_share`.
 
+The passes after the draft cannot quietly undo a seat. The duplicate review never removes a close
+family member's only shot: of two look-alikes where one is somebody's only appearance, the other
+one leaves; a slot it refills must still show them; and when neither works both frames stay (the
+record names them under `kept_only_shots`). The model's sampled review treats such a frame as
+protected. After every review and the filler pass below have run, the finished film is checked
+once more, and anyone who lost their only shot anyway (to the family-viewing gate or the timing
+trim) is seated again, through the same rules plus the family-viewing gate's own verdict on the
+frame. That second pass is recorded in
+`derived-decisions/family-seat-after-review.private.json`. Measured on a real February: the draft
+had the partner in one still, the scene review swapped it for a frame of the same moment that did
+not show her, and the film shipped without her. It now swaps it for a frame of that moment that
+does.
+
 ### Filler nothing vouches for
 
 The draft sizes a film from its material, so a quiet month can have more slots than pictures anyone
 can vouch for, and the leftover slots go to whatever stands. When no model polishes the draft, the
-settled cut gets one last pass: a shot with no indicator of its own (not starred, not a video or a
+settled cut gets one last removal pass: a shot with no indicator of its own (not starred, not a video or a
 Live Photo whose motion plays, nobody Immich knows in it, no banked standing answer for it, not
 ticked on the pool page) that the `frame_kind` head reads as showing nothing (a lone everyday
 object, an empty room, a body-part close-up, a screen or a document) leaves the film. Nothing takes

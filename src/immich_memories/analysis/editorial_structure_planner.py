@@ -27,7 +27,11 @@ from immich_memories.analysis.editorial_block_votes import (
 from immich_memories.analysis.editorial_carrier_eligibility import people_moment
 from immich_memories.analysis.editorial_episode_documents import factual_moment_rows
 from immich_memories.analysis.editorial_exposure_chains import chain_holds_for
-from immich_memories.analysis.editorial_family_seat import FilmSeatSource, seat_in_film
+from immich_memories.analysis.editorial_family_seat import (
+    FilmSeatSource,
+    film_close_family,
+    seat_in_film,
+)
 from immich_memories.analysis.editorial_home_radius import home_of, near_home_of
 from immich_memories.analysis.editorial_owner_required import admit_owner_required
 from immich_memories.analysis.editorial_picture_ladders import depth_cap
@@ -78,9 +82,11 @@ from immich_memories.analysis.editorial_structure_finishing import (
     check_empty_attached,
     drop_filler_nothing_vouches_for,
     final_duplicate_review,
+    held_by_gate,
     observe_attached,
     replacement_offers,
     resolve_motion_and_timing,
+    seat_again_after_review,
     trim_to_timing,
 )
 from immich_memories.analysis.editorial_structure_material import (
@@ -448,14 +454,14 @@ def _select(
             contract=contract,
             record=record_story,
         )
-    run.carriers = seat_in_film(
-        run.carriers,
-        FilmSeatSource(source, ports.rules, selection, material.units, banked),
+    seat = partial(
+        seat_in_film,
+        film=FilmSeatSource(source, ports.rules, selection, material.units, banked),
         candidates_of=story_candidates(selection, wall, pool, material.units),
         life=lambda asset_id: _shows_life(material, unit_of, asset_id),
         excluded=material.document_sources,
-        record=record_story,
     )
+    run.carriers = seat(run.carriers, record=record_story)
     required = frozenset(source.owner_required_asset_ids)
     if required:
         # After the read, never before it: the owner's ticks change no prompt.
@@ -501,6 +507,8 @@ def _select(
     attached, observed = observe_attached(
         run, ports, gate, material.picture_evidence, attached_relation_records, share_log
     )
+    # The review protects the same people the seat counts: in a person film, the subject's own.
+    close_of = film_close_family(source)
     final_duplicate_review(
         run,
         ports,
@@ -516,12 +524,24 @@ def _select(
         quality=material.builder.quality,
         pixel_facts=source.pixel_facts,
         owner_required=source.owner_required_asset_ids,
+        close_family_of=lambda asset_id: close_of(selection.lines.get(asset_id, "")),
     )
     run.selection_stages["after_final_duplicate_review"] = len(run.carriers)
     announce_count(len(run.carriers), "after the duplicate review")
     if ports.rules is not None and ports.thin is None:
-        # Last, so no replacement pass can bring a removed filler's like back in.
+        # The last removal pass, so no replacement pass can bring a removed filler's like back in.
         drop_filler_nothing_vouches_for(run, filler_evidence(source, banked), record_story)
+    # After every pass that removes a shot, so none of them can undo a family seat. It seats a
+    # close family member's frame, never filler the pass above removed.
+    seat_again_after_review(
+        run,
+        ports,
+        seat=lambda cut: seat(
+            cut,
+            record=lambda _name, audit: record_story("family-seat-after-review", audit),
+            held=held_by_gate(gate, unit_of),
+        ),
+    )
     check_empty_attached(ports, observed)
     return PlanOutcome(
         contract=contract,
