@@ -414,6 +414,7 @@ src/immich_memories/
 │   ├── selection_trace.py      # Per-stage funnel record: what each filter received and let through
 │   ├── progress.py             # ProgressTracker: the run clock the stage reporter reads
 │   ├── trip_detection.py       # GPS-based trip detection (clustering, injected geocoder)
+│   ├── trip_place.py           # Names a trip at the scale its pictures cover (city → country)
 │   ├── place_name_cache.py     # Localised names for the places one cut shows, one ask each
 │   ├── trip_discovery.py       # Shared UI/CLI all-asset discovery, including year-boundary trips
 │   ├── special_day.py          # Every run of activity, and a found day named from its own lines
@@ -544,6 +545,7 @@ src/immich_memories/
 │   ├── font_chain.py           # ChainFont: per-letter Noto fallback, bidi run order
 │   ├── script_fonts.py         # Pinned Noto script fonts, `titles fonts --install`
 │   ├── llm_titles.py           # LLM-generated titles
+│   ├── title_source.py         # TitleSource: which source produced the opening title
 │   ├── sdf_font.py             # SDF font rendering
 │   ├── sdf_font_rendering.py   # SDF rendering helpers
 │   └── sdf_atlas_gen.py        # SDF atlas generation
@@ -736,6 +738,7 @@ src/immich_memories/
 ├── security.py                 # Input sanitization, secret files, credential fingerprints
 ├── i18n.py                     # Internationalization
 ├── i18n_places.py              # Country names in the film's language (CLDR, offline)
+├── place_names.py              # Offline island boxes and short island/region names (en, fr)
 ├── preflight.py                # Dependency checks
 ├── preflight_network.py        # One row per outside host the config allows; silent when none
 ├── preflight_render.py         # Authenticated worker version and render capability check
