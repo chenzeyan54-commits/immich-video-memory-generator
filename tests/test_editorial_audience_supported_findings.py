@@ -200,7 +200,6 @@ def _held(finding, caption, **detectors):
     [
         "A woman is feeding a child at a table with a purple cup nearby.",
         "A woman is feeding a child with her hand.",
-        "A woman is feeding her baby on a bed with white sheets.",
     ],
 )
 def test_feeding_a_child_is_not_breastfeeding_without_a_breast_word(caption):
@@ -326,3 +325,42 @@ def test_an_unsupported_text_hold_never_lifts_a_nsfw_head_hold():
     result = share.check_audience(judge, evidence(caption, nsfw_marqo="yes"), "test")
     assert result["activity"]["supported"] is False
     assert not share.allowed(result["verdict"], "sendable")
+
+
+@pytest.mark.parametrize(
+    ("finding", "caption"),
+    [
+        (
+            "breastfeeding_or_expressing_milk",
+            "A woman lies on a bed, feeding an infant under a blanket.",
+        ),
+        (
+            "breastfeeding_or_expressing_milk",
+            "A woman sits on a hospital bed while feeding a baby.",
+        ),
+        ("toileting_or_changing", "A baby lies on a blanket with a nappy undone."),
+        ("toileting_or_changing", "A baby is lying on its back on a textured changing mat."),
+        ("bathing", "An adult washes a child's hair under running water."),
+        ("bathing", "A person washes a child's hair under a faucet."),
+        ("graphic_medical_procedure", "Blood pools around a deep wound during a procedure."),
+        (
+            "graphic_medical_procedure",
+            "A close-up shows a fresh stitch line across a deep cut on a forearm.",
+        ),
+    ],
+)
+def test_the_checks_do_not_drop_an_activity_described_in_other_words(finding, caption):
+    # A missed hold costs more than a lost picture: the checks stop topic reads, not real ones.
+    assert _held(finding, caption)
+
+
+@pytest.mark.parametrize(
+    "caption",
+    [
+        "A woman is feeding a child at a table with a purple cup nearby.",
+        "A woman is feeding a baby with a bottle in a well-lit room.",
+        "A man feeds a baby with a spoon in a high chair.",
+    ],
+)
+def test_feeding_with_food_a_spoon_or_a_bottle_is_still_not_breastfeeding(caption):
+    assert not _held("breastfeeding_or_expressing_milk", caption)

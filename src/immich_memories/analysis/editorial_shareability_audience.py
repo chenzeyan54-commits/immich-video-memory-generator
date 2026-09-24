@@ -257,9 +257,9 @@ _INTIMATE_TEXT = re.compile(
     re.IGNORECASE,
 )
 # A coffin, molten lava, a blood-stained race number and a newborn in a hospital bed were read as
-# graphic medical content (09-24): an injury, a wound, surgery or blood on a person has to be named.
+# graphic medical content (09-24): an injury, a wound, stitches, surgery or blood has to be named.
 _MEDICAL_TEXT = re.compile(
-    r"\b(?:surg(?:ery|eries|ical)|operat\w* on|incisions?|stitch(?:es|ed|ing)|sutur\w*|"
+    r"\b(?:surg(?:ery|eries|ical)|operat\w* on|incisions?|stitch(?:es|ed|ing)?|sutur\w*|deep cuts?|"
     r"wounds?|wounded|injur(?:y|ies|ed)|bleed\w*|gash(?:es)?|fractures?|"
     r"covered in blood|blood (?:on|from|pour\w*|drip\w*|runs?|running)|bloody|"
     r"giving birth|deliver\w* (?:a|the|her) baby)\b",
@@ -273,6 +273,26 @@ _TOILETING_TEXT = re.compile(
     r"potty[\s-]training|pee(?:s|ing)?|poo(?:p|ping|ped)?|urinat\w*|"
     r"(?:nappy|nappies|diapers?) chang\w*|chang\w* (?:[\w']+ ){0,2}(?:nappy|nappies|diapers?))\b",
     re.IGNORECASE,
+)
+# "Feeding a baby under a blanket" or "in a hospital bed" is how a caption describes nursing without
+# the word; a bottle, a spoon, food or a table says what the feeding is.
+_FEEDING_A_BABY = re.compile(
+    r"\b(?:feed\w*|fed|nurs(?:es|ed|ing))\b(?:\s+[\w']+){0,3}?\s+(?:bab(?:y|ies)|infants?|newborns?)\b",
+    re.IGNORECASE,
+)
+_NOT_THE_BREAST = re.compile(
+    r"\b(?:bottles?|formula|spoons?|food|meals?|puree|cups?|bowls?|tables?|high ?chairs?)\b",
+    re.IGNORECASE,
+)
+# A nappy undone or a baby on a changing mat is a change; a nappy worn is not (09-24).
+_CHANGE_TEXT = re.compile(
+    r"\b(?:(?:nappy|nappies|diapers?) (?:is |are )?(?:undone|open(?:ed)?|off|removed|down)|"
+    r"changing (?:mat|table|pad|surface|station)s?)\b",
+    re.IGNORECASE,
+)
+# Hair washed under running water or a faucet is a bath in all but the word.
+_RINSE_TEXT = re.compile(
+    r"\b(?:wash\w*|rins\w*|bath\w*)\b[^.]*\b(?:running water|faucets?|taps?)\b", re.IGNORECASE
 )
 _NEGATION = re.compile(r"\b(?:no|not|none|without|nor|never)\b", re.IGNORECASE)
 
@@ -292,7 +312,7 @@ def _bathing(member: Mapping[str, Any]) -> bool:
     """A person in a bath, tub, sink or shower, and no open water in the caption."""
     caption = str(member.get("caption", ""))
     return (
-        _states(_BATH_TEXT, member)
+        (_states(_BATH_TEXT, member) or _states(_RINSE_TEXT, member))
         and _states(_PERSON_TEXT, member)
         and not _OPEN_WATER_TEXT.search(caption)
     )
@@ -316,12 +336,17 @@ def _states(pattern: re.Pattern[str], member: Mapping[str, Any]) -> bool:
 _SUPPORT: dict[str, Callable[[Mapping[str, Any]], bool]] = {
     "identifying_record": lambda m: _document_label(m) or _states(_RECORD_TEXT, m),
     "adult_changing": lambda m: _states(_UNDRESSING_TEXT, m),
-    "breastfeeding_or_expressing_milk": _with_person(_BREAST_TEXT),
+    "breastfeeding_or_expressing_milk": lambda m: (
+        _with_person(_BREAST_TEXT)(m)
+        or (_states(_FEEDING_A_BABY, m) and not _NOT_THE_BREAST.search(str(m.get("caption", ""))))
+    ),
     "nudity_shirtless_or_underwear": lambda m: _states(_UNCOVERED_TEXT, m),
     "sexual_content": lambda m: _states(_SEXUAL_TEXT, m),
     "intimate_hygiene": _with_person(_INTIMATE_TEXT),
-    "graphic_medical_procedure": _with_person(_MEDICAL_TEXT),
-    "toileting_or_changing": _with_person(_TOILETING_TEXT),
+    "graphic_medical_procedure": lambda m: _states(_MEDICAL_TEXT, m),
+    "toileting_or_changing": lambda m: (
+        _with_person(_TOILETING_TEXT)(m) or _with_person(_CHANGE_TEXT)(m)
+    ),
     "bathing": _bathing,
 }
 
