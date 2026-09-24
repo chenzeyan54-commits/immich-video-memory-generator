@@ -127,10 +127,11 @@ under it in the description, because the model's say-so has been wrong: on 1,489
 held a wedding kiss as sexual content, a woman feeding a child at a table as breastfeeding, hand
 washing as intimate hygiene, a coffin as a graphic medical procedure and an empty toilet as
 toileting. So each finding holds only when the description states the activity: a sexual act or
-exposed genitals; a breast, nursing, latching or pumping word; wiping, a nappy change or a private
-body part; an injury, a wound, surgery or blood on a person; a person on or using a toilet or potty;
-a person in a bath, tub, sink or shower, and never a pool, the sea, a lake or a river ("bathroom"
-alone is a room). Nudity needs an uncovered body described, and a sleeveless top is clothing. An
+exposed genitals; a breast, nursing, latching or pumping word, or a baby fed with no bottle, spoon or
+food in sight; wiping, a nappy change or a private body part; an injury, a wound, stitches, surgery
+or blood; a person on or using a toilet or potty, a nappy undone or a baby on a changing mat; a
+person in a bath, tub, sink or shower, or hair washed under running water, and never a pool, the
+sea, a lake or a river ("bathroom" alone is a room). Nudity needs an uncovered body described, and a sleeveless top is clothing. An
 identifying record needs the document detector to call the picture a document, or the description
 to name one (an ID card, a passport, a patient wristband): readable text alone, a race bib, a logo
 or a sign, holds nothing. Adult changing needs the description to say someone is undressing or
