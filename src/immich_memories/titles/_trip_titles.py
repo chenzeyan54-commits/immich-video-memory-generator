@@ -13,6 +13,7 @@ from immich_memories.i18n_places import localise_country, localise_place
 from immich_memories.place_phrases import Place, place_phrase
 from immich_memories.place_phrases.place import infer_place_kind
 from immich_memories.processing.clip_caption import resolve_caption_locale
+from immich_memories.titles.letter_case import display_upper
 
 
 def _get_season(d: date) -> str:
@@ -35,7 +36,7 @@ def _get_duration_label(days: int, locale: str = "en") -> str:
     """Convert trip duration to human-readable label ("A WEEK", "DEUX SEMAINES")."""
     key = "month" if days >= 28 else _DURATION_KEYS.get(days)
     label = film_text(f"trip.{key}", locale) if key else film_text_n("trip.days", days, locale)
-    return label.upper()
+    return display_upper(label)
 
 
 def _get_time_label(start_date: date, end_date: date, locale: str = "en") -> str:
@@ -46,17 +47,21 @@ def _get_time_label(start_date: date, end_date: date, locale: str = "en") -> str
     """
     if start_date.month == end_date.month and start_date.year == end_date.year:
         forms = month_name_forms(start_date.month, locale)
-        return film_text("title.month_year", locale, year=start_date.year, **forms).upper()
+        return display_upper(film_text("title.month_year", locale, year=start_date.year, **forms))
     season = film_text(f"season.{_get_season(start_date).lower()}", locale)
     if start_date.year == end_date.year:
-        return film_text("title.season_year", locale, season=season, year=start_date.year).upper()
-    return film_text(
-        "title.season_year_span",
-        locale,
-        season=season,
-        start_year=start_date.year,
-        end_year=end_date.year,
-    ).upper()
+        return display_upper(
+            film_text("title.season_year", locale, season=season, year=start_date.year)
+        )
+    return display_upper(
+        film_text(
+            "title.season_year_span",
+            locale,
+            season=season,
+            start_year=start_date.year,
+            end_year=end_date.year,
+        )
+    )
 
 
 def _localised(place: Place, locale: str) -> str:
@@ -92,5 +97,5 @@ def generate_trip_title(
     place = Place(location_name, kind or infer_place_kind(location_name))
     phrase = place_phrase(locale, place)
     if phrase is None:
-        return f"{_localised(place, locale).upper()} · {duration}, {time_label}"
-    return f"{duration} {phrase.upper()}, {time_label}"
+        return f"{display_upper(_localised(place, locale))} · {duration}, {time_label}"
+    return f"{duration} {display_upper(phrase)}, {time_label}"
