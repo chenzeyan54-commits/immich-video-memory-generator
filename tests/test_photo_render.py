@@ -139,3 +139,28 @@ def test_a_real_render_is_a_clip_of_the_configured_length(tmp_path):
         check=True, capture_output=True, text=True,
     )  # fmt: skip
     assert float(json.loads(probe.stdout)["format"]["duration"]) == pytest.approx(1.0, abs=0.1)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_an_ffmpeg_without_zscale_still_renders_the_photo(tmp_path):
+    """Homebrew's FFmpeg ships without libzimg; the photo must come out SDR, not crash."""
+    real_run = subprocess.run
+
+    def ffmpeg_without_zscale(command, *args, **kwargs):
+        if "-filters" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=" ... scale  V->V  Scale\n")
+        return real_run(command, *args, **kwargs)
+
+    # WHY: FFmpeg's filter list is the boundary; everything else runs for real
+    with patch("immich_memories.processing.hdr_utilities.subprocess.run", ffmpeg_without_zscale):
+        clip = _render(tmp_path, _sdr_photo(tmp_path))
+
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=codec_name,pix_fmt,color_transfer", "-of", "json", str(clip.path)],
+        check=True, capture_output=True, text=True,
+    )  # fmt: skip
+    stream = json.loads(probe.stdout)["streams"][0]
+    assert stream["codec_name"] == "h264"
+    assert stream["pix_fmt"] == "yuv420p"
+    assert stream.get("color_transfer") != "smpte2084"
