@@ -29,7 +29,7 @@ def immich_clips():
 
     from immich_memories.api.sync_client import SyncImmichClient
     from immich_memories.config_loader import Config
-    from immich_memories.generate import assets_to_clips
+    from immich_memories.generate_clips import assets_to_clips
     from immich_memories.timeperiod import DateRange
 
     config = Config.from_yaml(Config.get_default_path())

@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _build_assembly_settings(
+def build_assembly_settings(
     params: GenerationParams,
     assembly_clips: list[AssemblyClip],
     *,
@@ -85,7 +85,7 @@ def _build_assembly_settings(
     auto_resolution = False
     target_resolution = (canvas.width, canvas.height)
 
-    title_screen_settings = _build_title_settings(params, config, assembly_clips)
+    title_screen_settings = build_title_settings(params, config, assembly_clips)
 
     # Scale mode: CLI/param > config > default
     effective_scale_mode = normalize_scale_mode(params.scale_mode or config.defaults.scale_mode)
@@ -146,7 +146,7 @@ def _build_assembly_settings(
     )
 
 
-def _build_title_settings(
+def build_title_settings(
     params: GenerationParams,
     config: Config,
     assembly_clips: list[AssemblyClip],
@@ -257,7 +257,7 @@ def apply_map_tile_policy(settings: TitleScreenSettings) -> TitleScreenSettings:
     return settings
 
 
-def _create_assembler(
+def create_assembler(
     settings: AssemblySettings,
     config: Config,
     *,
@@ -304,7 +304,7 @@ def _complete_music_failure(
     return MusicPhaseResult(applied=False, warning=warning)
 
 
-def _run_music_phase(
+def run_music_phase(
     params: GenerationParams,
     assembly_clips: list[AssemblyClip],
     result_path: Path,
@@ -378,7 +378,7 @@ def _run_music_phase(
     return MusicPhaseResult(applied=True, warning=selection.warning)
 
 
-def _upload_to_immich(
+def upload_to_immich(
     client: SyncImmichClient,
     video_path: Path,
     album_name: str | None,

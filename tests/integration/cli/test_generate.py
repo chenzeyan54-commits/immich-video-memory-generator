@@ -135,7 +135,7 @@ class TestGenerateMemoryPipeline:
 
     def test_automation_memory_key_override_is_authoritative(self, tmp_path) -> None:
         from immich_memories.config_loader import Config
-        from immich_memories.generate import GenerationParams, _build_memory_key
+        from immich_memories.generate import GenerationParams, build_memory_key
 
         params = GenerationParams(
             clips=[],
@@ -144,7 +144,7 @@ class TestGenerateMemoryPipeline:
             memory_key_override="candidate:exact:key",
         )
 
-        assert _build_memory_key(params) == "candidate:exact:key"
+        assert build_memory_key(params) == "candidate:exact:key"
 
     def test_two_clips_crossfade(self, tmp_path, fixture_mp4):
         """2 clips → generate_memory completes with valid output."""
@@ -974,7 +974,7 @@ class TestPipelineRunner:
 
         with (
             # WHY: mock assets_to_clips — real one needs Asset.duration from Immich metadata
-            patch("immich_memories.generate.assets_to_clips", return_value=clips),
+            patch("immich_memories.generate_clips.assets_to_clips", return_value=clips),
             # WHY: mock at source — lazy imports inside function body
             patch("immich_memories.analysis.smart_pipeline.SmartPipeline") as MockPipeline,
             # WHY: mock generate_memory — real one acquires lock + runs FFmpeg
@@ -1047,7 +1047,7 @@ class TestPipelineRunner:
         output = tmp_path / "preview.mp4"
 
         with (
-            patch("immich_memories.generate.assets_to_clips", return_value=clips),
+            patch("immich_memories.generate_clips.assets_to_clips", return_value=clips),
             patch("immich_memories.analysis.smart_pipeline.SmartPipeline") as pipeline_type,
             patch("immich_memories.generate.generate_memory") as generate,
         ):
@@ -1110,7 +1110,7 @@ class TestPipelineRunner:
         output_path = tmp_path / "noah-preview.mp4"
 
         with (
-            patch("immich_memories.generate.assets_to_clips", return_value=clips),
+            patch("immich_memories.generate_clips.assets_to_clips", return_value=clips),
             patch("immich_memories.analysis.smart_pipeline.SmartPipeline") as pipeline_type,
             patch("immich_memories.generate.generate_memory") as generate,
         ):

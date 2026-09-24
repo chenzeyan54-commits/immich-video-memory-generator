@@ -109,7 +109,8 @@ def _generate_memory(
     """
     from immich_memories.api.immich import SyncImmichClient
     from immich_memories.config_loader import Config
-    from immich_memories.generate import GenerationParams, assets_to_clips, generate_memory
+    from immich_memories.generate import GenerationParams, generate_memory
+    from immich_memories.generate_clips import assets_to_clips
 
     config = Config.from_yaml(Config.get_default_path())
     config.title_screens.enabled = enable_titles
